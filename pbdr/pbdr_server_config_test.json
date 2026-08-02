@@ -1,0 +1,33 @@
+{
+  "host": "0.0.0.0",
+  "monitor_port": 8080,
+  "ollama_url": "http://localhost:11434",
+  "max_queue": 10,
+  "max_parallel_jobs": 1,
+  "accept_new_jobs": true,
+  "maintenance": false,
+  "gpu": {
+    "type": "auto",
+    "nvidia_smi_path": "nvidia-smi",
+    "rocm_smi_path": "rocm-smi"
+  },
+  "monitoring": {
+    "update_interval": 1.0,
+    "history_size": 1000
+  },
+  "performance": {
+    "prefill_tok_s": 420,
+    "decode_tok_s": 61,
+    "model_memory_mb": 5120
+  },
+  "models": {
+    "default": "",
+    "available": [""],
+    "max_context": 8192,
+    "load_time": 15
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  }
+}
