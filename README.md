@@ -187,7 +187,7 @@ The project authors are the creators of the PBDR architecture described at http:
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/pbdr.git
+git clone https://github.com/oqo-ai/OQOAI-PBDR.git
 cd pbdr
 ```
 
@@ -536,26 +536,6 @@ We welcome any contribution to the project! Here's how you can help:
 3. **Improve documentation** — examples, guides, translations
 4. **Submit Pull Requests** — fixes and new features
 
-### Development Setup
-
-```bash
-# Clone repository
-git clone https://github.com/yourusername/pbdr.git
-cd pbdr
-
-# Install development dependencies
-pip install -r requirements-dev.txt
-
-# Run tests
-pytest tests/
-
-# Check code style
-black .
-flake8 .
-
-# Run linter
-pylint pbdr/
-```
 
 ### Pull Request Process
 
@@ -610,11 +590,11 @@ This MIT license governs only the copyright to the source code and does not itse
 
 ## 🌐 Links
 
-- [Documentation](https://github.com/yourusername/pbdr/wiki)
-- [Examples](https://github.com/yourusername/pbdr/tree/main/examples)
-- [Community](https://github.com/yourusername/pbdr/discussions)
+- [Documentation](https://github.com/oqo-ai/OQOAI-PBDR/wiki)
+- [Examples](https://github.com/oqo-ai/OQOAI-PBDR/tree/main/examples)
+- [Community](https://github.com/oqo-ai/OQOAI-PBDR/discussions)
 - [Scientific Publication](http://doi.org/10.17513/doi.26)
-- [Issue Tracker](https://github.com/yourusername/pbdr/issues)
+- [Issue Tracker](https://github.com/oqo-ai/OQOAI-PBDR/issues)
 
 ---
 
