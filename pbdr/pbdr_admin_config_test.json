@@ -1,0 +1,120 @@
+{
+  "client_config": {
+    "buffer_size": 10,
+    "buffer_timeout": 0.5,
+    "discovery_interval": 1.0,
+    "exploration_beta": 0.5,
+    "exploration_alpha": 2.0,
+    "jitter_range": 0.05,
+    "current_policy": "balanced",
+    "policies": {
+      "min_latency": {
+        "description": "Prioritizes fast response times over all other factors",
+        "weights": [
+          1.5,
+          1.2,
+          0.8,
+          1.5,
+          1.0,
+          0.5,
+          1.0,
+          1.0,
+          0.2,
+          0.5
+        ]
+      },
+      "model_affinity": {
+        "description": "Prioritizes nodes where the requested model is already loaded",
+        "weights": [
+          0.5,
+          0.7,
+          2.0,
+          0.5,
+          0.3,
+          0.2,
+          0.5,
+          0.5,
+          1.2,
+          0.2
+        ]
+      },
+      "energy_saving": {
+        "description": "Routes to the coolest nodes to reduce power consumption",
+        "weights": [
+          0.2,
+          0.3,
+          0.5,
+          0.2,
+          0.5,
+          0.2,
+          0.3,
+          5.0,
+          0.1,
+          0.3
+        ]
+      },
+      "balanced": {
+        "description": "Balanced approach for general workloads",
+        "weights": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    }
+  },
+  "server_config": {
+    "host": "0.0.0.0",
+    "monitor_port": 8080,
+    "max_queue": 10,
+    "max_parallel_jobs": 1,
+    "accept_new_jobs": true,
+    "maintenance": false
+  },
+  "devices": [
+    {
+      "hostname": "Scan_Server-02",
+      "ip": "192.168.1.103",
+      "type": "server",
+      "port": 8082,
+      "version": "",
+      "metadata": {}
+    },
+    {
+      "hostname": "Scan_Client-02",
+      "ip": "192.168.1.105",
+      "type": "client",
+      "port": 8080,
+      "version": "",
+      "metadata": {}
+    },
+    {
+      "hostname": "Scan_Server-01",
+      "ip": "192.168.1.107",
+      "type": "server",
+      "port": 8080,
+      "version": "",
+      "metadata": {}
+    }
+  ],
+  "groups": [
+    {
+      "name": "Test group-01",
+      "description": "Group for test admin",
+      "devices": [
+        "192.168.1.107"
+      ]
+    }
+  ],
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  }
+}
