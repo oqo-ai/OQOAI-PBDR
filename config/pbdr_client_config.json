@@ -1,0 +1,45 @@
+{
+  "servers": [
+    {
+      "host": "192.168.1.107",
+      "api_port": 11434,
+      "monitor_port": 8080
+    }
+  ],
+  "api": {
+    "host": "0.0.0.0",
+    "port": 8080
+  },
+  "api_port": 11434,
+  "api_format": "openai",
+  "proxy_mode": false,
+  "buffer_size": 10,
+  "buffer_timeout": 0.5,
+  "discovery_interval": 1.0,
+  "exploration_beta": 0.5,
+  "exploration_alpha": 2.0,
+  "jitter_range": 0.05,
+  "current_policy": "min_latency",
+  "policies": {
+    "min_latency": {
+      "description": "Prioritizes fast response times over all other factors",
+      "weights": [1.5, 1.2, 0.8, 1.5, 1.0, 0.5, 1.0, 1.0, 0.2, 0.5]
+    },
+    "model_affinity": {
+      "description": "Prioritizes nodes where the requested model is already loaded",
+      "weights": [0.5, 0.7, 2.0, 0.5, 0.3, 0.2, 0.5, 0.5, 1.2, 0.2]
+    },
+    "energy_saving": {
+      "description": "Routes to the coolest nodes to reduce power consumption",
+      "weights": [0.2, 0.3, 0.5, 0.2, 0.5, 0.2, 0.3, 5.0, 0.1, 0.3]
+    },
+    "balanced": {
+      "description": "Balanced approach for general workloads",
+      "weights": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    },
+    "default": {
+      "description": "Default policy with equal weights",
+      "weights": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    }
+  }
+}
