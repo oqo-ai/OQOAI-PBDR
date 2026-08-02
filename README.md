@@ -210,11 +210,11 @@ Next, proceed to the first launch section.
 ```bash
 # Start server
 # Linux:
-chmod +x ./pbdr_server_OAA4
-./pbdr_server_OAA4 pbdr_server_config_test.json
+chmod +x ./pbdr_server_OAA4_en
+./pbdr_server_OAA4_en pbdr_server_config_test.json
 
 # Windows:
-pbdr_server_OAA4.exe pbdr_server_config_test.json
+pbdr_server_OAA4_en.exe pbdr_server_config_test.json
 ```
 
 ### 2. Launch PBDR Client (router)
@@ -223,17 +223,15 @@ pbdr_server_OAA4.exe pbdr_server_config_test.json
 # Configure LLM server IP addresses in the client configuration. Specify IP addresses and ports of the nodes where PBDR servers are deployed.
 
 # Linux:
-chmod +x ./pbdr_server_OAA4
-./pbdr_client_OAA5 pbdr_client_config_test.json
+chmod +x ./pbdr_server_OAA4_en
+./pbdr_client_OAA5_en pbdr_client_config_test.json
 
 # Windows:
-pbdr_client_OAA5.exe pbdr_client_config_test.json
+pbdr_client_OAA5_en.exe pbdr_client_config_test.json
 
 # Verify server configuration
 # "servers": [{"host": "192.168.1.100", "monitor_port": 8080, "api_port": 11434}]
 
-# Start client
-python pbdr_client_OAA5.py pbdr_client_config.json
 ```
 
 ### 3. Launch PBDR Admin (web dashboard)
@@ -242,11 +240,11 @@ python pbdr_client_OAA5.py pbdr_client_config.json
 # Start administration server
 
 # Linux:
-chmod +x ./pbdr_admin3_rus
-./pbdr_admin3_rus pbdr_admin_config_test.json
+chmod +x ./pbdr_admin3_en
+./pbdr_admin3_en pbdr_admin_config_test.json
 
 # Windows:
-pbdr_admin3_rus.exe pbdr_admin_config_test.json
+pbdr_admin3_en.exe pbdr_admin_config_test.json
 
 # Open web interface in browser. After startup, the admin dashboard will be available at http://<admin server IP>:8081
 ```
