@@ -5,6 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
+![Status](https://img.shields.io/badge/Status-Alpha-orange)
+
 
 > ⚡ **Turn idle corporate GPUs into a private, fault-tolerant AI cluster**  
 > 📦 **Zero-dependency setup in <30 seconds**  
