@@ -53,6 +53,8 @@ The PBDR architecture is characterized by the following features:
 
 > **Further Reading:** Scientific publication dedicated to the implemented architecture "PBDR Policy-Based Decentralized Routing for Enterprise AI Inference" http://doi.org/10.17513/doi.26.
 
+![PBDR Concept](docs/image/Concept.png)
+
 ---
 
 ## 🌟 Key Features
