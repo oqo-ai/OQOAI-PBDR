@@ -15,6 +15,10 @@ import math
 import random
 import time
 import logging
+import os
+import sys
+import signal
+import subprocess
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -250,7 +254,7 @@ class PolicyDrivenOptimizer:
 
 
 class PBDRClientSync:
-    """PBDR Client - SYNCHRONOUS VERSION"""
+    """PBDR Client - PRODUCTION VERSION with concurrent request support"""
     
     def __init__(self, config_path: str):
         self.config_path = config_path
@@ -262,6 +266,26 @@ class PBDRClientSync:
         self.running = True
         self.session: Optional[aiohttp.ClientSession] = None
         
+        # ============================================================
+        # PRODUCTION: Concurrent request handling
+        # Each request gets a unique ID and runs in its own task
+        # ============================================================
+        self.active_requests: Dict[str, asyncio.Task] = {}  # Track active tasks
+        self.request_counter = 0  # Increment for each new request
+        self.nodes_lock = asyncio.Lock()  # Lock for accessing nodes list
+        
+        # Rate limiting - prevent overload
+        self.max_concurrent = self.config.get('max_concurrent_requests', 100)
+        self.semaphore = asyncio.Semaphore(self.max_concurrent)
+        
+        # Statistics for monitoring
+        self.stats = {
+            'total_requests': 0,
+            'active_requests': 0,
+            'completed_requests': 0,
+            'failed_requests': 0
+        }
+        
         # Uploading Policies
         self.policies = self.config.get('policies', {})
         self.current_policy = self.config.get('current_policy', 'default')
@@ -270,8 +294,9 @@ class PBDRClientSync:
         # Cache for responses
         self.responses: Dict[str, Any] = {}
         
-        logger.info(f"PBDR Client Sync initialized with {len(self.config.get('servers', []))} servers")
+        logger.info(f"PBDR Client Prod initialized with {len(self.config.get('servers', []))} servers")
         logger.info(f"Current policy: {self.current_policy}")
+        logger.info(f"Max concurrent requests: {self.max_concurrent}")
         
     def _update_policy(self):
         policy = self.policies.get(self.current_policy, {})
@@ -279,16 +304,36 @@ class PBDRClientSync:
         logger.info(f"Policy vector: {self.config['policy_vector'][:5]}...")
     
     async def start(self):
-        self.session = aiohttp.ClientSession()
+        # ============================================================
+        # PRODUCTION: Use connection pool for better performance
+        # ============================================================
+        connector = aiohttp.TCPConnector(
+            limit=100,  # Max total connections
+            limit_per_host=20,  # Max connections per host
+            ttl_dns_cache=300,  # DNS cache TTL
+            enable_cleanup_closed=True
+        )
+        self.session = aiohttp.ClientSession(connector=connector)
         
-        # detecting nodes
+        # Initial node discovery
         await self._discover_nodes()
         
-        # launching the background update
+        # Launch background tasks
         asyncio.create_task(self._discovery_loop())
+        asyncio.create_task(self._stats_reporter())
         
-        # launching API
+        # Launch API server
         await self._run_api_server()
+        
+        
+        
+    async def _get_nodes_snapshot(self) -> List[NodeState]:
+        """
+        Get a snapshot of current nodes.
+        Each request gets its own copy to avoid race conditions.
+        """
+        async with self.nodes_lock:
+            return list(self.nodes.values())
     
     async def _discover_nodes(self):
         """Node Detection"""
@@ -317,7 +362,7 @@ class PBDRClientSync:
         return len(self.nodes)
 
 
-    async def _discovery_loop(self):      # <-- ДОБАВИТЬ ЭТОТ МЕТОД
+    async def _discovery_loop(self):
         """Node Discovery Cycle"""
         discovery_interval = self.config.get('discovery_interval', 1.0)
         debug_logger.debug(f"Discovery loop started (interval={discovery_interval}s)")
@@ -330,6 +375,18 @@ class PBDRClientSync:
             
             await asyncio.sleep(discovery_interval)
 
+
+
+    async def _stats_reporter(self):
+        """Report statistics every minute for monitoring"""
+        while self.running:
+            await asyncio.sleep(60)
+            logger.info(
+                f"Stats: total={self.stats['total_requests']}, "
+                f"active={self.stats['active_requests']}, "
+                f"completed={self.stats['completed_requests']}, "
+                f"failed={self.stats['failed_requests']}"
+            )
 
     async def _fetch_node_status(self, url: str, server: Dict) -> Optional[Tuple[str, NodeState]]:
         try:
@@ -372,115 +429,79 @@ class PBDRClientSync:
             debug_logger.error(f"Error fetching status: {e}")
         return None
     
-    async def _forward_to_server(self, node: NodeState, request: LLMRequest) -> Dict:
-        """Sending to PBDR Server (OpenAI API format)"""
-        api_port = 11434  # значение по умолчанию
-        for server in self.config.get('servers', []):
-            server_id = f"{server['host']}:{server.get('api_port', 11434)}"
-            if server_id == node.node_id:
-                api_port = server.get('api_port', 11434)
-                break
+    async def _forward_to_server(self, node: NodeState, request_data: Dict, request_id: str, aiohttp_request: web.Request):
+        """
+        Forward request to LLM Server.
+        Each request has its own isolated forwarding.
+        """
         
-        url = f"http://{node.ip}:{api_port}/v1/chat/completions"
-        
-        payload = {
-            "model": request.model,
-            "messages": [{"role": "user", "content": request.prompt}],
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-            "stream": False
-        }
-        
-        debug_logger.debug(f"\n--- FORWARDING to Server (OpenAI API) ---")
-        debug_logger.debug(f"  URL: {url}")
-        debug_logger.debug(f"  Model: {request.model}")
-        debug_logger.debug(f"  Prompt: {request.prompt[:100]}...")
-        
-        try:
-            start_time = time.time()
-            async with self.session.post(url, json=payload, timeout=60) as resp:
-                elapsed = time.time() - start_time
-                debug_logger.debug(f"  Response time: {elapsed:.2f}s")
-                debug_logger.debug(f"  Status: {resp.status}")
-                
-                if resp.status == 200:
-                    result = await resp.json()
-                    debug_logger.debug(f"  ✅ Response received (OpenAI format)")
-                    return result
-                else:
-                    error_text = await resp.text()
-                    debug_logger.error(f"  ❌ Server error: {resp.status}")
-                    return {'error': f'Server error {resp.status}: {error_text}'}
-                    
-        except asyncio.TimeoutError:
-            debug_logger.error(f"  ❌ Timeout")
-            return {'error': 'Timeout waiting for server response'}
-        except Exception as e:
-            debug_logger.error(f"  ❌ Error: {e}")
-            return {'error': str(e)}
-            
-            
-            
-    async def _forward_to_server_stream(self, node: NodeState, llm_request: LLMRequest, aiohttp_request: web.Request) -> web.StreamResponse:
-        """Sending a request in stream mode (for Open WebUI)"""
+        # Find API port for this node
         api_port = 11434
         for server in self.config.get('servers', []):
-            server_id = f"{server['host']}:{server.get('api_port', 11434)}"
-            if server_id == node.node_id:
+            if server['host'] == node.ip:
                 api_port = server.get('api_port', 11434)
                 break
         
         url = f"http://{node.ip}:{api_port}/v1/chat/completions"
+        payload = request_data  # Forward request as-is
         
-        payload = {
-            "model": llm_request.model,
-            "messages": [{"role": "user", "content": llm_request.prompt}],
-            "temperature": llm_request.temperature,
-            "max_tokens": llm_request.max_tokens,
-            "stream": True
-        }
+        debug_logger.debug(f"  Request {request_id}: Proxying to {url}")
         
-        debug_logger.debug(f"  URL: {url} (STREAM mode)")
+        try:
+            # ============================================================
+            # PRODUCTION: Use shared session (it's thread-safe)
+            # ============================================================
+            async with self.session.post(url, json=payload, timeout=120) as resp:
+                if resp.status == 200:
+                    if payload.get('stream', False):
+                        return await self._proxy_stream(resp, request_id, aiohttp_request)
+                    else:
+                        return await resp.json()
+                else:
+                    error_text = await resp.text()
+                    return {'error': f'Server error {resp.status}: {error_text}'}
+        except asyncio.TimeoutError:
+            return {'error': 'Timeout'}
+        except Exception as e:
+            return {'error': str(e)}
+            
+    async def _proxy_stream(self, server_response: aiohttp.ClientResponse, request_id: str, aiohttp_request: web.Request) -> web.StreamResponse:
+        """
+        Proxy stream from LLM Server to user.
+        Each stream is isolated per request.
+        """
         
-        # Creating a stream response
+        # ============================================================
+        # PRODUCTION: Each stream has its own response object
+        # ============================================================
         response = web.StreamResponse()
         response.headers['Content-Type'] = 'text/event-stream'
         response.headers['Cache-Control'] = 'no-cache'
         response.headers['Connection'] = 'keep-alive'
         
-        
-        await response.prepare(aiohttp_request)
-        
         try:
-            async with self.session.post(url, json=payload, timeout=120) as resp:
-                if resp.status == 200:
-                    debug_logger.debug(f"  ✅ Stream connected, forwarding data...")
-                    async for chunk in resp.content.iter_chunks():
-                        if chunk[0]:
-                            await response.write(chunk[0])
-                    await response.write_eof()
-                    debug_logger.debug(f"  ✅ Stream completed")
-                    return response
-                else:
-                    error_text = await resp.text()
-                    debug_logger.error(f"  ❌ Stream error: {resp.status}")
-                    error_msg = f'data: {{"error": "Server error {resp.status}"}}\n\n'
-                    await response.write(error_msg.encode())
-                    await response.write_eof()
-                    return response
-                    
-        except asyncio.TimeoutError:
-            debug_logger.error(f"  ❌ Stream timeout")
-            error_msg = 'data: {"error": "Timeout waiting for response"}\n\n'
-            await response.write(error_msg.encode())
+            await response.prepare(aiohttp_request)
+            
+            # Copy data from server to client
+            async for chunk in server_response.content.iter_any():
+                if chunk:
+                    await response.write(chunk)
+                    await response.drain()
+            
             await response.write_eof()
             return response
         except Exception as e:
-            debug_logger.error(f"  ❌ Stream error: {e}")
-            error_msg = f'data: {{"error": "{str(e)}"}}\n\n'
-            await response.write(error_msg.encode())
-            await response.write_eof()
+            debug_logger.error(f"Stream proxy error for {request_id}: {e}")
+            try:
+                error_msg = f'data: {{"error": "{str(e)}"}}\n\n'
+                await response.write(error_msg.encode())
+                await response.write_eof()
+            except:
+                pass
             return response
+
+        
+
             
             
             
@@ -489,104 +510,161 @@ class PBDRClientSync:
             
     
     async def _handle_chat(self, request):
-        """Request processing - supports stream mode"""
-        debug_logger.info(f"\n{'='*60}")
-        debug_logger.info(f"📨 CHAT REQUEST RECEIVED")
+        """
+        Handle incoming chat request
+        Each request runs in its own task and doesn't block others.
+        """
+        
+        # Parse request data
+        try:
+            original_data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({'error': 'Invalid JSON'}, status=400)
+        
+        # Generate unique request ID
+        self.request_counter += 1
+        request_id = f"req_{self.request_counter}_{int(time.time())}_{hashlib.md5(str(original_data).encode()).hexdigest()[:8]}"
+        
+        # Update statistics
+        self.stats['total_requests'] += 1
+        
+        # ============================================================
+        # PRODUCTION: Rate limiting with semaphore
+        # ============================================================
+        # Acquire semaphore before processing
+        try:
+            await self.semaphore.acquire()
+        except asyncio.CancelledError:
+            self.stats['failed_requests'] += 1
+            return web.json_response({'error': 'Request cancelled'}, status=499)
+        
+        self.stats['active_requests'] += 1
+        
+        # ============================================================
+        # PRODUCTION: Create isolated task for this request
+        # Each request runs independently and doesn't block others
+        # ============================================================
+        task = asyncio.create_task(
+            self._process_request(request_id, original_data, request)
+        )
+        
+        # Store task for potential cancellation
+        self.active_requests[request_id] = task
         
         try:
-            data = await request.json()
+            # Wait for this specific request to complete
+            result = await task
             
-            # Data extraction
-            model = data.get('model', 'llama3.2:1b')
-            messages = data.get('messages', [])
-            prompt = messages[0].get('content', '') if messages else ''
-            max_tokens = data.get('max_tokens', 10000)
-            temperature = data.get('temperature', 0.7)
-            stream = data.get('stream', False)
+            # Update statistics
+            self.stats['active_requests'] -= 1
+            self.stats['completed_requests'] += 1
+            self.semaphore.release()  # ← Release semaphore
             
-            debug_logger.info(f"  Model: {model}, Stream: {stream}")
-            debug_logger.info(f"  Prompt: {prompt[:100]}...")
+            return result
             
-            # Creating an internal query
-            req = LLMRequest(
-                request_id=f"req_{int(time.time())}_{hashlib.md5(str(data).encode()).hexdigest()[:8]}",
-                model=model,
-                prompt_tokens=len(prompt) // 4,
-                expected_output_tokens=max_tokens,
-                required_vram=self._estimate_vram(model),
-                context_length=8192,
-                prompt=prompt,
-                stream=stream,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
+        except asyncio.CancelledError:
+            self.stats['active_requests'] -= 1
+            self.stats['failed_requests'] += 1
+            self.semaphore.release()
+            return web.json_response({'error': 'Request cancelled'}, status=499)
+        except Exception as e:
+            self.stats['active_requests'] -= 1
+            self.stats['failed_requests'] += 1
+            self.semaphore.release()
+            logger.error(f"Request {request_id} failed: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+        finally:
+            # Clean up
+            self.active_requests.pop(request_id, None)
+
+
+
+    async def _process_request(self, request_id: str, original_data: Dict, request: web.Request) -> Any:
+        """
+        Process a single request in isolation.
+        Each request gets its own node selection and failover.
+        """
+        
+        try:
+            stream = original_data.get('stream', False)
             
-            debug_logger.info(f"  Request ID: {req.request_id}")
+            # ============================================================
+            # PRODUCTION: Each request gets its own node snapshot
+            # This ensures node selection is independent per request
+            # ============================================================
+            nodes_snapshot = await self._get_nodes_snapshot()
             
-            # 1. SERVER SURVEY
-            debug_logger.info(f"\n--- STEP 1: Discovering nodes ---")
-            node_count = await self._discover_nodes()
+            # Create LLMRequest for this specific request
+            req = self._create_llm_request(original_data)
             
-            if node_count == 0:
-                debug_logger.error("❌ No nodes discovered!")
-                return web.json_response({'error': 'No nodes available'}, status=503)
+            # ============================================================
+            # PRODUCTION: Independent node selection per request
+            # Request can use a different (better) node 
+            # ============================================================
+            eligible_nodes = self.optimizer._apply_hard_constraints(nodes_snapshot, req)
             
-            debug_logger.info(f"✅ Discovered {node_count} nodes")
-            
-            # 2. CHOOSING THE BEST NODE
-            debug_logger.info(f"\n--- STEP 2: Selecting optimal node ---")
-            node = self.optimizer.select_node(list(self.nodes.values()), req)
-            
-            if not node:
-                debug_logger.error("❌ No eligible node found!")
-                for n in self.nodes.values():
-                    debug_logger.info(f"  {n.hostname}: loaded={n.loaded_model}, "
-                                    f"vram={n.memory_free:.0f}MB, models={n.available_models}")
+            if not eligible_nodes:
+                logger.warning(f"Request {request_id}: No eligible nodes for model {req.model}")
                 return web.json_response({
                     'error': 'No suitable node found',
                     'details': {
-                        'available_nodes': len(self.nodes),
-                        'requested_model': req.model,
+                        'model': req.model,
+                        'available_nodes': len(nodes_snapshot),
                         'required_vram': req.required_vram
                     }
                 }, status=503)
             
-            debug_logger.info(f"✅ Selected: {node.hostname}")
-            debug_logger.info(f"   Loaded model: {node.loaded_model}")
+            logger.info(f"Request {request_id}: Found {len(eligible_nodes)} eligible nodes")
             
-            # 3. SENDING TO THE SERVER
-            debug_logger.info(f"\n--- STEP 3: Forwarding to Server ---")
+            # ============================================================
+            # PRODUCTION: Independent failover per request
+            # Each request tries nodes sequentially on its own
+            # ============================================================
+            result = await self._try_nodes_sequential(
+                eligible_nodes, 
+                original_data, 
+                request_id,
+                request
+            )
             
+            if isinstance(result, dict) and 'error' in result:
+                logger.error(f"Request {request_id} failed: {result['error']}")
+                return web.json_response(result, status=503)
+            
+            # Return result
             if stream:
-                # STREAM MODE
-                debug_logger.info("  Using STREAM mode")
-                return await self._forward_to_server_stream(node, req, request)
+                return result  # StreamResponse
             else:
-                # NORMAL MODE
-                result = await self._forward_to_server(node, req)
+                return web.json_response(result)  # JSON response
                 
-                if 'error' in result:
-                    debug_logger.error(f"❌ Server error: {result['error']}")
-                    return web.json_response(result, status=500)
-                
-                debug_logger.info(f"✅ Server response received (OpenAI format)")
-                
-                
-                if 'choices' in result and result['choices']:
-                    content = result['choices'][0].get('message', {}).get('content', '')
-                    debug_logger.info(f"   Response length: {len(content)} chars")
-                else:
-                    debug_logger.warning("  ⚠️ No choices in response")
-                
-                debug_logger.info(f"{'='*60}\n")
-                return web.json_response(result)
-            
-        except json.JSONDecodeError:
-            debug_logger.error("❌ Invalid JSON")
-            return web.json_response({'error': 'Invalid JSON'}, status=400)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            debug_logger.error(f"❌ Error: {e}")
-            return web.json_response({'error': str(e)}, status=500)
+            logger.error(f"Request {request_id} processing error: {e}")
+            raise
+
+    def _create_llm_request(self, data: Dict) -> LLMRequest:
+        """Creating an LLMRequest from the original request"""
+        model = data.get('model', '')
+        messages = data.get('messages', [])
+        prompt = messages[-1].get('content', '') if messages else ''
+        stream = data.get('stream', False)
+        temperature = data.get('temperature', 0.7)
+        max_tokens = data.get('max_tokens', 2048)
+        
+        return LLMRequest(
+            request_id=f"req_{int(time.time())}_{hashlib.md5(str(data).encode()).hexdigest()[:8]}",
+            model=model,
+            prompt_tokens=len(prompt) // 4,
+            expected_output_tokens=max_tokens,
+            required_vram=self._estimate_vram(model),
+            context_length=8192,
+            prompt=prompt,
+            stream=stream,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+
     
     async def _handle_health(self, request):
         """Health check"""
@@ -766,7 +844,106 @@ class PBDRClientSync:
                 for model in sorted(all_models)
             ]
         })
-    
+
+
+
+
+
+    async def _handle_restart(self, request):
+        """Restarting the client with all the parameters saved"""
+        try:
+            # We check that the configuration exists
+            if not os.path.exists(self.config_path):
+                return web.json_response({
+                    'error': f'Config file not found: {self.config_path}'
+                }, status=400)
+            
+            # Starting a restart in the background
+            asyncio.create_task(self._perform_restart())
+            
+            return web.json_response({
+                'status': 'restarting',
+                'message': f'Restarting with config: {self.config_path}',
+                'pid': os.getpid()
+            })
+        except Exception as e:
+            logger.error(f"Restart error: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+
+    async def _perform_restart(self):
+        """Performing a restart with all parameters saved"""
+        logger.info(f"🔄 Restarting PBDR Client with config: {self.config_path}")
+        
+        # We give you time to send a response to the client.
+        await asyncio.sleep(0.5)
+        
+        # Saving all command line arguments
+        args = [sys.executable] + sys.argv
+        
+        # If the config is not passed via an argument, add it
+        if len(sys.argv) < 2 or not any(arg.endswith('.json') for arg in sys.argv):
+            args.append(self.config_path)
+        
+        logger.info(f"Starting new process: {' '.join(args)}")
+        
+        try:
+            # Starting a new process
+            if sys.platform == 'win32':
+                # Windows
+                subprocess.Popen(
+                    args,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            else:
+                # Unix-like
+                subprocess.Popen(
+                    args,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+            
+            # Completing the current process correctly
+            await self._graceful_shutdown()
+            
+        except Exception as e:
+            logger.error(f"Failed to restart: {e}")
+            
+            raise
+
+    async def _graceful_shutdown(self):
+        """Correct shutdown"""
+        logger.info("Performing graceful shutdown...")
+        
+        # Closing the HTTP session
+        if hasattr(self, 'session') and self.session:
+            await self.session.close()
+        
+        # Stopping the detection cycle
+        self.running = False
+        
+        # We give you time to complete the operations
+        await asyncio.sleep(0.5)
+        
+        # Completing the process
+        logger.info("Exiting process...")
+        os._exit(0)
+
+    async def _handle_config_path(self, request):
+        """Returns the path to the configuration file"""
+        return web.json_response({
+            'config_path': self.config_path,
+            'config_exists': os.path.exists(self.config_path),
+            'pid': os.getpid()
+        })
+
+
+
+
+
+
     def _estimate_vram(self, model: str) -> float:
         """Estimation of the required VRAM for the model - experimental function"""
         vram_map = {
@@ -792,7 +969,8 @@ class PBDRClientSync:
         app.router.add_post('/api/config', self._handle_post_config)
         app.router.add_get('/api/policy', self._handle_get_policy)
         app.router.add_post('/api/policy', self._handle_post_policy)
-
+        app.router.add_post('/api/restart', self._handle_restart)
+        app.router.add_get('/api/config-path', self._handle_config_path)
         
         host = self.config.get('api', {}).get('host', '0.0.0.0')
         port = self.config.get('api', {}).get('port', 8080)
@@ -812,6 +990,47 @@ class PBDRClientSync:
         self.running = False
         if self.session:
             await self.session.close()
+            
+            
+            
+            
+    async def _try_nodes_sequential(self, eligible_nodes: List[NodeState], original_data: Dict, request_id: str, aiohttp_request: web.Request) -> Optional[Dict]:
+        """
+        Try nodes sequentially with failover.
+        Each request has its own isolated failover logic.
+        """
+        
+        last_error = None
+        stream = original_data.get('stream', False)
+        
+        for node in eligible_nodes:
+            logger.info(f"🔄 Request {request_id}: Trying node {node.hostname} ({node.ip})")
+            
+            try:
+                # ============================================================
+                # PRODUCTION: Each request uses its own isolated forwarding
+                # ============================================================
+                result = await self._forward_to_server(node, original_data, request_id, aiohttp_request)
+                
+                if isinstance(result, dict) and 'error' in result:
+                    last_error = result.get('error', 'Unknown error')
+                    logger.warning(f"❌ Request {request_id}: Node {node.hostname} failed: {last_error}")
+                    continue
+                else:
+                    logger.info(f"✅ Request {request_id}: Success on node {node.hostname}")
+                    return result
+                    
+            except asyncio.TimeoutError:
+                last_error = 'Timeout'
+                logger.warning(f"❌ Request {request_id}: Node {node.hostname} timeout")
+                continue
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"❌ Request {request_id}: Node {node.hostname} exception: {last_error}")
+                continue
+        
+        logger.error(f"❌ Request {request_id}: All nodes failed. Last error: {last_error}")
+        return {'error': f'All nodes failed: {last_error}'}
 
 
 async def main():
