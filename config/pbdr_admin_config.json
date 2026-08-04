@@ -83,7 +83,8 @@
       "hostname": "Scan_Server-02",
       "ip": "192.168.1.103",
       "type": "server",
-      "port": 8082,
+      "monitor_port": 8082,
+      "api_port": 8080,
       "version": "",
       "metadata": {}
     },
@@ -91,7 +92,8 @@
       "hostname": "Scan_Client-02",
       "ip": "192.168.1.105",
       "type": "client",
-      "port": 8080,
+      "monitor_port": 8080,
+      "api_port": 11434,
       "version": "",
       "metadata": {}
     },
@@ -99,7 +101,8 @@
       "hostname": "Scan_Server-01",
       "ip": "192.168.1.107",
       "type": "server",
-      "port": 8080,
+      "monitor_port": 8080,
+      "api_port": 11434,
       "version": "",
       "metadata": {}
     }
