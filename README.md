@@ -2,8 +2,10 @@
 
 # OQOAI-PBDR Оpen quota-cluster orchestrator AI - Decentralized Routing for Enterprise AI Inference
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green)](https://opensource.org/licenses/MIT)
+[![Tests](https://github.com/oqo-ai/OQOAI-PBDR/actions/workflows/test.yml/badge.svg)](https://github.com/oqo-ai/OQOAI-PBDR/actions/workflows/test.yml)
+[![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org/)
+[![GitHub release](https://img.shields.io/github/v/release/oqo-ai/OQOAI-PBDR?include_prereleases)](https://github.com/oqo-ai/OQOAI-PBDR/releases)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
 ![Status](https://img.shields.io/badge/Status-Alpha-orange)
 
