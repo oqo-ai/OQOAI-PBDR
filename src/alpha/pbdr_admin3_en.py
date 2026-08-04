@@ -45,12 +45,12 @@ class DeviceInfo:
     ip: str
     device_type: str  # 'client' or 'server'
     status: str = 'unknown'  # 'online', 'offline', 'error'
-    port: int = 0
+    monitor_port: int = 8080
+    api_port: int = 11434
     version: str = ""
     last_seen: float = 0.0
     config_version: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
-    # Метрики сервера
     gpu_info: Dict[str, Any] = field(default_factory=dict)
     cpu_info: Dict[str, Any] = field(default_factory=dict)
     queue_info: Dict[str, Any] = field(default_factory=dict)
@@ -63,7 +63,8 @@ class DeviceInfo:
             'hostname': self.hostname,
             'ip': self.ip,
             'type': self.device_type,
-            'port': self.port,
+            'monitor_port': self.monitor_port,
+            'api_port': self.api_port,
             'version': self.version,
             'metadata': self.metadata
         }
@@ -128,8 +129,8 @@ class DeviceManager:
             # Create backup
             if os.path.exists(self.config_path):
                 backup_path = self.config_path + '.backup'
-                with open(self.config_path, 'r') as src:
-                    with open(backup_path, 'w') as dst:
+                with open(self.config_path, 'r', encoding='utf-8') as src:
+                    with open(backup_path, 'w', encoding='utf-8') as dst:
                         dst.write(src.read())
                 logger.debug(f"Created backup: {backup_path}")
             
@@ -154,7 +155,8 @@ class DeviceManager:
                 hostname=device.get('hostname', 'unknown'),
                 ip=device['ip'],
                 device_type=device.get('type', 'server'),
-                port=device.get('port', 8080),
+                monitor_port=device.get('monitor_port', 8080),
+                api_port=device.get('api_port', 11434),
                 version=device.get('version', ''),
                 metadata=device.get('metadata', {})
             )
@@ -177,7 +179,7 @@ class DeviceManager:
             return None
         
         device = self.devices[device_ip]
-        url = f"http://{device_ip}:{device.port}/api/config"
+        url = f"http://{device_ip}:{device.monitor_port}/api/config"
         
         try:
             timeout = aiohttp.ClientTimeout(total=3.0)
@@ -219,7 +221,7 @@ class DeviceManager:
         if device.device_type != 'client':
             return {'error': 'Policies only available for clients'}
         
-        url = f"http://{device_ip}:{device.port}/api/policy"
+        url = f"http://{device_ip}:{device.monitor_port}/api/policy"
         
         try:
             timeout = aiohttp.ClientTimeout(total=3.0)
@@ -253,7 +255,7 @@ class DeviceManager:
             return False
         
         device = self.devices[device_ip]
-        url = f"http://{device_ip}:{device.port}/api/config"
+        url = f"http://{device_ip}:{device.monitor_port}/api/config"
         
         try:
             async with self.session.post(url, json=config_data, timeout=5.0) as resp:
@@ -279,7 +281,7 @@ class DeviceManager:
             logger.error(f"Device {device_ip} is not a client")
             return False
         
-        url = f"http://{device_ip}:{device.port}/api/policy"
+        url = f"http://{device_ip}:{device.monitor_port}/api/policy"
         
         try:
             async with self.session.post(url, json={'policy': policy_name}, timeout=5.0) as resp:
@@ -406,13 +408,14 @@ class DeviceManager:
                         ip=ip,
                         device_type='unknown',
                         status='online',
-                        port=port,
+                        monitor_port=port,
+                        api_port=11434,
                         last_seen=time.time()
                     )
         except:
             pass
         
-        # Пробуем status
+        
         url_status = f"http://{ip}:{port}/status"
         try:
             timeout = aiohttp.ClientTimeout(total=1.0)
@@ -423,7 +426,8 @@ class DeviceManager:
                         ip=ip,
                         device_type='unknown',
                         status='online',
-                        port=port,
+                        monitor_port=port,
+                        api_port=11434,
                         last_seen=time.time()
                     )
         except:
@@ -466,7 +470,7 @@ class DeviceManager:
             return None
         
         try:
-            url = f"http://{device_ip}:{device.port}/status"
+            url = f"http://{device_ip}:{device.monitor_port}/status"
             timeout = aiohttp.ClientTimeout(total=2.0)
             async with self.session.get(url, timeout=timeout) as resp:
                 if resp.status == 200:
@@ -501,7 +505,7 @@ class DeviceManager:
         
         device = self.devices[device_ip]
         
-        url = f"http://{device_ip}:{device.port}/health"
+        url = f"http://{device_ip}:{device.monitor_port}/health"
         try:
             timeout = aiohttp.ClientTimeout(total=1.0)
             async with self.session.get(url, timeout=timeout) as resp:
@@ -512,7 +516,7 @@ class DeviceManager:
         except:
             pass
         
-        url = f"http://{device_ip}:{device.port}/status"
+        url = f"http://{device_ip}:{device.monitor_port}/status"
         try:
             timeout = aiohttp.ClientTimeout(total=1.0)
             async with self.session.get(url, timeout=timeout) as resp:
@@ -544,7 +548,6 @@ class DeviceManager:
         logger.info(f"Device added and saved: {device.hostname} ({device.ip})")
     
     def update_device(self, ip: str, data: Dict[str, Any]):
-        """Updating the device while saving"""
         if ip not in self.devices:
             logger.error(f"Device {ip} not found for update")
             return False
@@ -555,8 +558,10 @@ class DeviceManager:
             device.hostname = data['hostname']
         if 'device_type' in data or 'type' in data:
             device.device_type = data.get('device_type') or data.get('type')
-        if 'port' in data:
-            device.port = int(data['port'])
+        if 'monitor_port' in data:
+            device.monitor_port = int(data['monitor_port'])
+        if 'api_port' in data:
+            device.api_port = int(data['api_port'])
         if 'ip' in data and data['ip'] != ip:
             new_ip = data['ip']
             device.ip = new_ip
@@ -587,6 +592,143 @@ class DeviceManager:
             del self.groups[name]
             self._save_config()
             logger.info(f"Group removed and saved: {name}")
+            
+            
+    async def restart_device(self, device_ip: str) -> bool:
+        """Reboot remote node"""
+        if device_ip not in self.devices:
+            logger.error(f"Device {device_ip} not found")
+            return False
+        
+        device = self.devices[device_ip]
+        
+        # Getting the configuration path from the device
+        config_path = await self._get_config_path_from_device(device_ip)
+        if not config_path:
+            # If you couldn't get it, use the standard
+            if device.device_type == 'server':
+                config_path = 'pbdr_server_config.json'
+            else:
+                config_path = 'pbdr_client_config.json'
+        
+        url = f"http://{device_ip}:{device.monitor_port}/api/restart"
+        
+        try:
+            async with self.session.post(url, timeout=5.0) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    logger.info(f"Restart command sent to {device_ip}: {result.get('message', 'OK')}")
+                    return True
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"Failed to restart {device_ip}: {resp.status} - {error_text}")
+                    return False
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout restarting {device_ip}")
+            return False
+        except Exception as e:
+            logger.error(f"Error restarting {device_ip}: {e}")
+            return False
+
+    async def _get_config_path_from_device(self, device_ip: str) -> Optional[str]:
+        """Getting the configuration path from the device"""
+        if device_ip not in self.devices:
+            return None
+        
+        device = self.devices[device_ip]
+        url = f"http://{device_ip}:{device.monitor_port}/api/config-path"
+        
+        try:
+            timeout = aiohttp.ClientTimeout(total=2.0)
+            async with self.session.get(url, timeout=timeout) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get('config_path')
+        except Exception as e:
+            logger.debug(f"Could not get config path from {device_ip}: {e}")
+        
+        return None
+
+    async def restart_group(self, group_name: str) -> Dict[str, bool]:
+        """Restarting a node group"""
+        if group_name not in self.groups:
+            logger.error(f"Group {group_name} not found")
+            return {}
+        
+        group = self.groups[group_name]
+        results = {}
+        
+        for device_ip in group.devices:
+            if device_ip in self.devices:
+                results[device_ip] = await self.restart_device(device_ip)
+        
+        return results
+
+    async def restart_all_devices(self) -> Dict[str, bool]:
+        """Restarting all node"""
+        results = {}
+        for device_ip in self.devices:
+            results[device_ip] = await self.restart_device(device_ip)
+        return results
+
+    def get_server_list(self) -> List[Dict[str, Any]]:
+        """Getting a list of servers in the client configuration format"""
+        servers = []
+        for device in self.devices.values():
+            if device.device_type == 'server' and device.status == 'online':
+                servers.append({
+                    'host': device.ip,
+                    'api_port': device.api_port,
+                    'monitor_port': device.monitor_port
+                })
+        return servers
+
+    async def push_servers_to_client(self, client_ip: str, servers: List[Dict]) -> bool:
+        """Sending a list of servers to the client"""
+        if client_ip not in self.devices:
+            logger.error(f"Client {client_ip} not found")
+            return False
+        
+        device = self.devices[client_ip]
+        if device.device_type != 'client':
+            logger.error(f"Device {client_ip} is not a client")
+            return False
+        
+        # Getting the current client configuration
+        config = await self.fetch_device_config(client_ip)
+        if not config or 'error' in config:
+            logger.error(f"Could not fetch config from {client_ip}")
+            return False
+        
+        # Updating the servers section
+        if isinstance(config, dict):
+            config['servers'] = servers
+            return await self.push_config_to_device(client_ip, config)
+        
+        return False
+
+    async def push_servers_to_group(self, group_name: str, servers: List[Dict]) -> Dict[str, bool]:
+        """Sending a list of servers to a group"""
+        if group_name not in self.groups:
+            logger.error(f"Group {group_name} not found")
+            return {}
+        
+        group = self.groups[group_name]
+        results = {}
+        
+        for client_ip in group.devices:
+            if client_ip in self.devices and self.devices[client_ip].device_type == 'client':
+                results[client_ip] = await self.push_servers_to_client(client_ip, servers)
+        
+        return results
+
+    async def push_servers_to_all_clients(self, servers: List[Dict]) -> Dict[str, bool]:
+        """Sending a list of servers to all clients"""
+        results = {}
+        for device_ip, device in self.devices.items():
+            if device.device_type == 'client':
+                results[device_ip] = await self.push_servers_to_client(device_ip, servers)
+        return results
 
 class WebInterface:
     """Web-based administration interface"""
@@ -713,6 +855,14 @@ class WebInterface:
             <button onclick="showAddDevice()">Add Device</button>
             <button onclick="showAddGroup()">Add Group</button>
             <button onclick="getAllMetrics()">GPU Metrics</button>
+            
+
+            <button onclick="pushServersToAllClients()" class="btn-sm-primary" style="background: #9f7aea;">
+               Push Servers to All Clients
+            </button>
+            <button onclick="restartAllDevices()" class="btn-sm-warning" style="background: #ed8936;">
+                Restart All Nodes
+            </button>
         </div>
         
         <div class="panel">
@@ -796,8 +946,12 @@ class WebInterface:
                 </select>
             </div>
             <div class="form-group">
-                <label>Port</label>
-                <input type="number" id="editDevicePort" value="8080">
+                <label>Monitor Port</label>
+                <input type="number" id="editDeviceMonitorPort" value="8080">
+            </div>
+            <div class="form-group">
+                <label>API Port</label>
+                <input type="number" id="editDeviceApiPort" value="11434">
             </div>
             <div class="modal-actions">
                 <button onclick="closeModal('editDeviceModal')">Cancel</button>
@@ -887,8 +1041,12 @@ class WebInterface:
                 </select>
             </div>
             <div class="form-group">
-                <label>Port</label>
-                <input type="number" id="devicePort" value="8080">
+                <label>Monitor Port</label>
+                <input type="number" id="deviceMonitorPort" value="8080">
+            </div>
+            <div class="form-group">
+                <label>API Port</label>
+                <input type="number" id="deviceApiPort" value="11434">
             </div>
             <div class="modal-actions">
                 <button onclick="closeModal('addDeviceModal')">Cancel</button>
@@ -991,26 +1149,31 @@ class WebInterface:
                    
                     let actionsHtml = `
                         <div class="device-actions">
-                            <button class="btn-sm-success" onclick="refreshDeviceStatus('${device.ip}')" title="обновить Status">⟳</button>
+                            <button class="btn-sm-success" onclick="refreshDeviceStatus('${device.ip}')" title="Refresh Status">⟳</button>
                             <button class="btn-sm-info" onclick="showEditDevice('${device.ip}')" title="Edit">✎</button>
                     `;
-                    
-                    
+
+
                     if (device.device_type === 'server') {
                         actionsHtml += `<button class="btn-sm-primary" onclick="getDeviceMetrics('${device.ip}')" title="Metrics">☲</button>`;
                     }
-                    
-                    // Кнопка конфигурации для всех
+
+
                     actionsHtml += `<button class="btn-sm-primary" onclick="showConfig('${device.ip}', '${device.device_type}')" title="Config">🛠</button>`;
-                    
-                    // Кнопка политик только для клиентов
+
+
                     if (device.device_type === 'client') {
-                        actionsHtml += `<button class="btn-sm-warning" onclick="showPolicies('${device.ip}')" title="Policy">⛗</button>`;
+                        actionsHtml += `
+                            <button class="btn-sm-warning" onclick="showPolicies('${device.ip}')" title="Policy">⛗</button>
+                            <button class="btn-sm-primary" onclick="pushServersToClient('${device.ip}')" title="Push Servers" style="background: #9f7aea;">⇯</button>
+                        `;
                     }
-                    
+
+
                     actionsHtml += `
-                            <button class="btn-sm-danger" onclick="removeDevice('${device.ip}')" title="Delete">Х</button>
-                        </div>
+                        <button class="btn-sm-warning" onclick="restartDevice('${device.ip}')" title="Restart" style="background: #ed8936;">↶</button>
+                        <button class="btn-sm-danger" onclick="removeDevice('${device.ip}')" title="Delete">✕</button>
+                    </div>
                     `;
                     
                     tr.innerHTML = `
@@ -1018,7 +1181,7 @@ class WebInterface:
                         <td>${device.ip}</td>
                         <td><span style="background: ${device.device_type === 'server' ? '#4299e1' : '#48bb78'}; color: white; padding: 0.125rem 0.375rem; border-radius: 0.25rem; font-size: 0.75rem;">${device.device_type}</span></td>
                         <td class="${statusClass}">${device.status}</td>
-                        <td>${device.port || 8080}</td>
+                        <td>${device.monitor_port || 8080}</td> 
                         <td>${metricsHtml}</td>
                         <td>${actionsHtml}</td>
                     `;
@@ -1040,15 +1203,30 @@ class WebInterface:
                 
                 for (const group of data) {
                     const tr = document.createElement('tr');
+                    
+
+                    let actionsHtml = `
+                        <div class="device-actions">
+                            <button class="btn-sm-primary" onclick="pushServersToGroup('${group.name}')" 
+                                    title="Push Servers to Group" style="background: #9f7aea;">
+                                Push Servers
+                            </button>
+                            <button class="btn-sm-warning" onclick="restartGroup('${group.name}')" 
+                                    title="Restart Group" style="background: #ed8936;">
+                                Restart
+                            </button>
+                            <button class="btn-sm-danger" onclick="removeGroup('${group.name}')" 
+                                    title="Remove Group">
+                                ✕
+                            </button>
+                        </div>
+                    `;
+                    
                     tr.innerHTML = `
                         <td><strong>${group.name}</strong></td>
                         <td>${group.description || ''}</td>
                         <td>${(group.devices || []).join(', ')}</td>
-                        <td>
-                            <div class="device-actions">
-                                <button class="btn-sm-danger" onclick="removeGroup('${group.name}')">Remove</button>
-                            </div>
-                        </td>
+                        <td>${actionsHtml}</td>
                     `;
                     tbody.appendChild(tr);
                 }
@@ -1133,7 +1311,8 @@ class WebInterface:
                         hostname: cells[0].textContent.trim(),
                         ip: cells[1].textContent.trim(),
                         device_type: cells[2].textContent.trim().toLowerCase(),
-                        port: cells[4].textContent.trim()
+                        monitor_port: cells[4].textContent.trim(),
+                        api_port: '11434'  
                     };
                 }
             });
@@ -1147,7 +1326,8 @@ class WebInterface:
             document.getElementById('editDeviceHostname').value = deviceData.hostname;
             document.getElementById('editDeviceIp').value = deviceData.ip;
             document.getElementById('editDeviceType').value = deviceData.device_type;
-            document.getElementById('editDevicePort').value = deviceData.port;
+            document.getElementById('editDeviceMonitorPort').value = deviceData.monitor_port;
+            document.getElementById('editDeviceApiPort').value = deviceData.api_port || 11434;
             
             document.getElementById('editDeviceModal').classList.add('active');
         }
@@ -1157,7 +1337,8 @@ class WebInterface:
             const hostname = document.getElementById('editDeviceHostname').value;
             const newIp = document.getElementById('editDeviceIp').value;
             const deviceType = document.getElementById('editDeviceType').value;
-            const port = document.getElementById('editDevicePort').value;
+            const monitorPort = parseInt(document.getElementById('editDeviceMonitorPort').value);
+            const apiPort = parseInt(document.getElementById('editDeviceApiPort').value);
             
             try {
                 const response = await fetch('/api/devices/' + editDeviceOriginalIp, {
@@ -1167,7 +1348,8 @@ class WebInterface:
                         hostname,
                         ip: newIp,
                         type: deviceType,
-                        port: parseInt(port)
+                        monitor_port: monitorPort,
+                        api_port: apiPort
                     })
                 });
                 
@@ -1315,7 +1497,7 @@ class WebInterface:
             }
         }
         
-        // Показать конфигурацию (загружается с узла)
+
 async function showConfig(ip, deviceType) {
     currentDeviceIp = ip;
     currentDeviceType = deviceType;
@@ -1480,12 +1662,12 @@ async function showPolicies(ip) {
         let source = 'unknown';
         
         if (data.policies && typeof data.policies === 'object') {
-            // Формат: { policies: {...}, current_policy: '...' }
+            //  { policies: {...}, current_policy: '...' }
             policiesData = data.policies;
             currentPolicy = data.current_policy;
             source = data.source || 'unknown';
         } else if (data.current_policy && data.policies) {
-            // Прямой ответ
+
             policiesData = data.policies;
             currentPolicy = data.current_policy;
             source = 'remote';
@@ -1514,7 +1696,7 @@ async function showPolicies(ip) {
                 selector.appendChild(option);
             }
             
-            // Показываем источник
+
             const sourceEl = document.getElementById('policySource');
             if (source === 'remote') {
                 sourceEl.innerHTML = 'Load from node (remote)';
@@ -1653,13 +1835,25 @@ async function showPolicies(ip) {
             const ip = document.getElementById('deviceIp').value;
             const hostname = document.getElementById('deviceHostname').value;
             const type = document.getElementById('deviceType').value;
-            const port = parseInt(document.getElementById('devicePort').value);
+            const monitorPort = parseInt(document.getElementById('deviceMonitorPort').value);
+            const apiPort = parseInt(document.getElementById('deviceApiPort').value);
+            
+            if (!ip || !hostname) {
+                alert('IP and Hostname are required');
+                return;
+            }
             
             try {
                 await fetch('/api/devices', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ip, hostname, type, port })
+                    body: JSON.stringify({ 
+                        ip, 
+                        hostname, 
+                        type, 
+                        monitor_port: monitorPort,
+                        api_port: apiPort
+                    })
                 });
                 closeModal('addDeviceModal');
                 await refreshAll();
@@ -1707,6 +1901,203 @@ async function showPolicies(ip) {
                 alert('Failed to remove group: ' + e.message);
             }
         }
+        
+        
+        
+        // === PUSH SERVERS FUNCTIONS ===
+
+        async function pushServersToClient(ip) {
+
+            if (!ip) {
+                ip = prompt('Enter client IP:');
+                if (!ip) return;
+            }
+            
+            if (!confirm(`Push server list to client ${ip}?`)) return;
+            
+            try {
+                const response = await fetch('/api/push-servers-to-client', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({client_ip: ip})
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert(`✅ Servers pushed successfully to ${ip}\n📊 ${result.servers_count} servers sent`);
+                } else {
+                    alert(`❌ Failed to push servers to ${ip}: ${result.error || 'Unknown error'}`);
+                }
+                await refreshAll();
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        async function pushServersToGroup(groupName) {
+
+            if (!groupName) {
+                groupName = prompt('Enter group name:');
+                if (!groupName) return;
+            }
+            
+            if (!confirm(`Push server list to ALL clients in group "${groupName}"?`)) return;
+            
+            try {
+                const response = await fetch(`/api/push-servers-to-group/${encodeURIComponent(groupName)}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({})
+                });
+                const result = await response.json();
+                
+                let message = `📊 Results for group "${groupName}":\n`;
+                message += `✅ Success: ${result.success_count || 0}\n`;
+                message += `❌ Failed: ${result.failed_count || 0}\n\n`;
+                
+                if (result.results) {
+                    for (const [ip, success] of Object.entries(result.results)) {
+                        message += `  ${ip}: ${success ? '✅' : '❌'}\n`;
+                    }
+                }
+                alert(message);
+                await refreshAll();
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        async function pushServersToAllClients() {
+            if (!confirm('Push server list to ALL clients?')) return;
+            
+            try {
+                const response = await fetch('/api/push-servers-to-all-clients', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({})
+                });
+                const result = await response.json();
+                
+                alert(`📊 Results:\n✅ Success: ${result.success_count || 0}\n❌ Failed: ${result.failed_count || 0}`);
+                await refreshAll();
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        async function getServerList() {
+            try {
+                const response = await fetch('/api/server-list');
+                const data = await response.json();
+                
+                let message = `📋 Available servers (${data.count}):\n\n`;
+                if (data.count === 0) {
+                    message += 'No servers available';
+                } else {
+                    for (const server of data.servers) {
+                        message += `  ${server.host}:${server.monitor_port} (API: ${server.api_port})\n`;
+                    }
+                }
+                alert(message);
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }        
+
+
+
+
+
+
+
+        // === RESTART FUNCTIONS ===
+
+        async function restartDevice(ip) {
+
+            if (!ip) {
+                ip = prompt('Enter device IP to restart:');
+                if (!ip) return;
+            }
+            
+            if (!confirm(`🔄 Restart device ${ip}?`)) return;
+            
+            try {
+                const response = await fetch(`/api/restart-device/${ip}`, {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert(`✅ Restart command sent to ${ip}`);
+                } else {
+                    alert(`❌ Failed to restart ${ip}: ${result.error || 'Unknown error'}`);
+                }
+                await refreshAll();
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        async function restartGroup(groupName) {
+
+            if (!groupName) {
+                groupName = prompt('Enter group name:');
+                if (!groupName) return;
+            }
+            
+            if (!confirm(`🔄 Restart ALL devices in group "${groupName}"?`)) return;
+            
+            try {
+                const response = await fetch(`/api/restart-group/${encodeURIComponent(groupName)}`, {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                
+                let message = `📊 Results for group "${groupName}":\n`;
+                let successCount = 0;
+                let failCount = 0;
+                
+                if (result.results) {
+                    for (const [ip, success] of Object.entries(result.results)) {
+                        message += `  ${ip}: ${success ? '✅' : '❌'}\n`;
+                        if (success) successCount++; else failCount++;
+                    }
+                }
+                message += `\n✅ Success: ${successCount}\n❌ Failed: ${failCount}`;
+                alert(message);
+                await refreshAll();
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        async function restartAllDevices() {
+            if (!confirm('🔄 Restart ALL devices?')) return;
+            
+            try {
+                const response = await fetch('/api/restart-all-devices', {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                
+                alert(`📊 Results:\n✅ Success: ${result.success_count || 0}\n❌ Failed: ${result.failed_count || 0}`);
+                await refreshAll();
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+
+
+
+
+
+
+
+
+
+
+
         
         
         refreshAll();
@@ -1761,7 +2152,28 @@ class AdminServer:
         app.router.add_post('/api/apply-config-all', self._handle_apply_config_all)
         app.router.add_post('/api/apply-policy/{ip}', self._handle_apply_policy)
         app.router.add_post('/api/apply-policy-group/{name}', self._handle_apply_policy_group)
-        app.router.add_post('/api/apply-policy-all', self._handle_apply_policy_all)
+        app.router.add_post('/api/apply-policy-all', self._handle_apply_policy_all)    
+        app.router.add_post('/api/restart/{ip}', self._handle_restart_device)
+
+        
+        app.router.add_post('/api/push-servers', self._handle_push_servers)
+        app.router.add_post('/api/push-servers-group/{name}', self._handle_push_servers_group)
+        app.router.add_post('/api/push-servers-all', self._handle_push_servers_all)
+
+        
+        
+        
+
+        # Push servers endpoints
+        app.router.add_post('/api/push-servers-to-client', self._handle_push_servers_to_client)
+        app.router.add_post('/api/push-servers-to-group/{name}', self._handle_push_servers_to_group)
+        app.router.add_post('/api/push-servers-to-all-clients', self._handle_push_servers_to_all_clients)
+        app.router.add_get('/api/server-list', self._handle_server_list)
+
+        # Restart endpoints
+        app.router.add_post('/api/restart-device/{ip}', self._handle_restart_device)
+        app.router.add_post('/api/restart-group/{name}', self._handle_restart_group)
+        app.router.add_post('/api/restart-all-devices', self._handle_restart_all_devices)
         
         host = '0.0.0.0'
         port = 8081
@@ -1808,7 +2220,8 @@ class AdminServer:
                 'status': d.status,
                 'version': d.version,
                 'last_seen': d.last_seen,
-                'port': d.port,
+                'monitor_port': d.monitor_port,
+                'api_port': d.api_port,
                 'gpu_info': d.gpu_info,
                 'cpu_info': d.cpu_info,
                 'queue_info': d.queue_info,
@@ -1921,7 +2334,8 @@ class AdminServer:
             hostname=data.get('hostname', data['ip']),
             ip=data['ip'],
             device_type=data.get('type', 'server'),
-            port=data.get('port', 8080),
+            monitor_port=data.get('monitor_port', 8080),
+            api_port=data.get('api_port', 11434),
             status='unknown'
         )
         self.manager.add_device(device)
@@ -2031,6 +2445,195 @@ class AdminServer:
         self.running = False
         if self.session:
             await self.session.close()
+
+
+    async def _handle_push_servers_to_client(self, request):
+        """Sending a list of servers to a specific client"""
+        try:
+            data = await request.json()
+            client_ip = data.get('client_ip')
+            
+            if not client_ip:
+                return web.json_response({'error': 'client_ip required'}, status=400)
+            
+            if client_ip not in self.manager.devices:
+                return web.json_response({'error': 'Device not found'}, status=404)
+            
+            if self.manager.devices[client_ip].device_type != 'client':
+                return web.json_response({'error': 'Device is not a client'}, status=400)
+            
+            servers = self.manager.get_server_list()
+            success = await self.manager.push_servers_to_client(client_ip, servers)
+            
+            return web.json_response({
+                'success': success,
+                'servers_count': len(servers),
+                'servers': servers if success else []
+            })
+        except Exception as e:
+            logger.error(f"Error pushing servers to client: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+
+    async def _handle_push_servers_to_group(self, request):
+        """Sending a list of servers to a group of clients"""
+        try:
+            group_name = request.match_info['name']
+            
+            if group_name not in self.manager.groups:
+                return web.json_response({'error': 'Group not found'}, status=404)
+            
+            servers = self.manager.get_server_list()
+            results = await self.manager.push_servers_to_group(group_name, servers)
+            
+            success_count = sum(1 for v in results.values() if v)
+            
+            return web.json_response({
+                'success_count': success_count,
+                'failed_count': len(results) - success_count,
+                'results': results
+            })
+        except Exception as e:
+            logger.error(f"Error pushing servers to group: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+
+    async def _handle_push_servers_to_all_clients(self, request):
+        """Sending a list of servers to all clients"""
+        try:
+            servers = self.manager.get_server_list()
+            results = await self.manager.push_servers_to_all_clients(servers)
+            
+            success_count = sum(1 for v in results.values() if v)
+            
+            return web.json_response({
+                'success_count': success_count,
+                'failed_count': len(results) - success_count,
+                'results': results
+            })
+        except Exception as e:
+            logger.error(f"Error pushing servers to all clients: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+
+    async def _handle_server_list(self, request):
+        """Retrieves the list of available servers"""
+        servers = self.manager.get_server_list()
+        return web.json_response({
+            'servers': servers,
+            'count': len(servers)
+        })
+
+    # === RESTART HANDLERS ===
+
+    async def _handle_restart_device(self, request):
+        """Restarting an individual device"""
+        try:
+            ip = request.match_info['ip']
+            
+            if ip not in self.manager.devices:
+                return web.json_response({'error': 'Device not found'}, status=404)
+            
+            success = await self.manager.restart_device(ip)
+            return web.json_response({'success': success})
+        except Exception as e:
+            logger.error(f"Error restarting device: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+
+    async def _handle_restart_group(self, request):
+        """Restarting a device group"""
+        try:
+            group_name = request.match_info['name']
+            
+            if group_name not in self.manager.groups:
+                return web.json_response({'error': 'Group not found'}, status=404)
+            
+            results = await self.manager.restart_group(group_name)
+            success_count = sum(1 for v in results.values() if v)
+            
+            return web.json_response({
+                'success_count': success_count,
+                'failed_count': len(results) - success_count,
+                'results': results
+            })
+        except Exception as e:
+            logger.error(f"Error restarting group: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+
+    async def _handle_restart_all_devices(self, request):
+        """Restarting all devices"""
+        try:
+            results = await self.manager.restart_all_devices()
+            success_count = sum(1 for v in results.values() if v)
+            
+            return web.json_response({
+                'success_count': success_count,
+                'failed_count': len(results) - success_count,
+                'results': results
+            })
+        except Exception as e:
+            logger.error(f"Error restarting all devices: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+
+    async def _handle_push_servers(self, request):
+        """Sending a list of servers to the client"""
+        data = await request.json()
+        client_ip = data.get('client_ip')
+        servers = data.get('servers', [])
+        
+        if not servers:
+            servers = self.manager.get_server_list()
+        
+        success = await self.manager.push_servers_to_client(client_ip, servers)
+        return web.json_response({
+            'success': success,
+            'servers_count': len(servers),
+            'servers': servers if success else []
+        })
+
+    async def _handle_push_servers_group(self, request):
+        """Sending a list of servers to a group"""
+        name = request.match_info['name']
+        data = await request.json()
+        servers = data.get('servers', [])
+        
+        if not servers:
+            servers = self.manager.get_server_list()
+        
+        results = await self.manager.push_servers_to_group(name, servers)
+        success_count = sum(1 for v in results.values() if v)
+        return web.json_response({
+            'success_count': success_count,
+            'failed_count': len(results) - success_count,
+            'results': results
+        })
+
+    async def _handle_push_servers_all(self, request):
+        """Sending a list of servers to all clients"""
+        data = await request.json()
+        servers = data.get('servers', [])
+        
+        if not servers:
+            servers = self.manager.get_server_list()
+        
+        results = await self.manager.push_servers_to_all_clients(servers)
+        success_count = sum(1 for v in results.values() if v)
+        return web.json_response({
+            'success_count': success_count,
+            'failed_count': len(results) - success_count,
+            'results': results
+        })
+
+    async def _handle_server_list(self, request):
+        """Retrieves the list of available servers"""
+        servers = self.manager.get_server_list()
+        return web.json_response({
+            'servers': servers,
+            'count': len(servers)
+        })
+
+
+
+
+
+
 
 async def main():
     """Main function"""
