@@ -17,6 +17,9 @@ import psutil
 import time
 import logging
 import threading
+import os
+import sys
+import signal
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -732,6 +735,8 @@ class PBDRServer:
         app.router.add_get('/health', self._handle_health)
         app.router.add_get('/api/config', self._handle_get_config)
         app.router.add_post('/api/config', self._handle_post_config)
+        app.router.add_post('/api/restart', self._handle_restart)
+        app.router.add_get('/api/config-path', self._handle_config_path)
         
         host = self.config.get('host', '0.0.0.0')
         monitor_port = self.config.get('monitor_port', 8080)
@@ -818,6 +823,106 @@ class PBDRServer:
         except Exception as e:
             logger.error(f"Chat request error: {e}")
             return web.json_response({'error': str(e)}, status=500)
+            
+            
+            
+    async def _handle_restart(self, request):
+        """Перезапуск сервера с сохранением всех параметров"""
+        try:
+            # We check that the configuration exists
+            if not os.path.exists(self.config_path):
+                return web.json_response({
+                    'error': f'Config file not found: {self.config_path}'
+                }, status=400)
+            
+            # Starting a restart in the background
+            asyncio.create_task(self._perform_restart())
+            
+            return web.json_response({
+                'status': 'restarting',
+                'message': f'Restarting with config: {self.config_path}',
+                'pid': os.getpid()
+            })
+        except Exception as e:
+            logger.error(f"Restart error: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+
+    async def _perform_restart(self):
+        """Выполнение перезапуска с сохранением всех параметров"""
+        logger.info(f"🔄 Restarting PBDR Server with config: {self.config_path}")
+        
+        # We give you time to send a response to the client.
+        await asyncio.sleep(0.5)
+        
+        # Saving all command line arguments
+        args = [sys.executable] + sys.argv
+        
+        # If the config is not passed via an argument, add it
+        if len(sys.argv) < 2 or not any(arg.endswith('.json') for arg in sys.argv):
+            args.append(self.config_path)
+        
+        logger.info(f"Starting new process: {' '.join(args)}")
+        
+        try:
+            # Starting a new process
+            if sys.platform == 'win32':
+                # Windows
+                subprocess.Popen(
+                    args,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            else:
+                # Unix-like
+                subprocess.Popen(
+                    args,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+            
+            # Completing the current process correctly
+            await self._graceful_shutdown()
+            
+        except Exception as e:
+            logger.error(f"Failed to restart: {e}")
+            # We do not kill the process if it was not possible to start a new one.
+            raise
+
+    async def _graceful_shutdown(self):
+        """Correct shutdown"""
+        logger.info("Performing graceful shutdown...")
+        
+        # Closing the HTTP session
+        if hasattr(self, 'session') and self.session:
+            await self.session.close()
+        
+        # Closing the LLM interface
+        if hasattr(self, 'llm') and self.llm:
+            await self.llm.close()
+        
+        # We give you time to complete the operations
+        await asyncio.sleep(0.5)
+        
+        # Completing the process
+        logger.info("Exiting process...")
+        os._exit(0)
+
+    async def _handle_config_path(self, request):
+        """Returns the path to the configuration file"""
+        return web.json_response({
+            'config_path': self.config_path,
+            'config_exists': os.path.exists(self.config_path),
+            'pid': os.getpid()
+        })            
+            
+            
+            
+            
+            
+            
+            
     
     async def _handle_health(self, request):
         """Health Check Processing"""
