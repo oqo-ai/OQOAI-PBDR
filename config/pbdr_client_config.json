@@ -15,6 +15,7 @@
   "proxy_mode": false,
   "buffer_size": 10,
   "buffer_timeout": 0.5,
+  "max_concurrent_requests": 100,
   "discovery_interval": 1.0,
   "exploration_beta": 0.5,
   "exploration_alpha": 2.0,
