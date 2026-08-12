@@ -67,6 +67,8 @@ class NodeState:
     average_job_duration_ms: float = 0.0
     last_update: float = 0.0
     version: str = ""
+    gpu_power_max: float = 200.0  
+    gpu_name: str = ""
     
     def is_stale(self, max_age: float = 1.0) -> bool:
         return (time.time() - self.last_update) > max_age
@@ -138,6 +140,418 @@ class CostVectorCalculator:
         
         debug_logger.debug(f"  Cost vector: {[f'{x:.2f}' for x in result]}")
         return result
+
+
+
+class CloudLLMInterface:
+    """Interface for cloud LLM providers (OpenAI API)"""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.providers = {}
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.usage_stats = {
+            'total_tokens': 0,
+            'total_cost': 0.0,
+            'requests_count': 0,
+            'errors_count': 0
+        }
+        self._init_providers()
+    
+    def _init_providers(self):
+        """Initializing providers from the config"""
+        cloud_config = self.config.get('cloud_providers', {})
+        
+        for provider_name, provider_cfg in cloud_config.items():
+            if provider_cfg.get('enabled', False):
+                self.providers[provider_name] = {
+                    'config': provider_cfg,
+                    'models': provider_cfg.get('models', {})
+                }
+        
+        if self.providers:
+            logger.info(f"☁️ Initialized cloud providers: {list(self.providers.keys())}")
+        else:
+            logger.info("🏠 No cloud providers enabled")
+    
+    async def start(self, session: aiohttp.ClientSession):
+        """Launching the interface"""
+        self.session = session
+    
+    async def generate(self, provider: str, model: str, messages: List[Dict], **kwargs) -> Dict:
+        """Generation via a cloud provider"""
+        
+        if provider not in self.providers:
+            raise ValueError(f"Provider {provider} not configured")
+        
+        cfg = self.providers[provider]
+        start_time = time.time()
+        
+        try:
+            url = f"{cfg['config'].get('base_url', 'https://api.openai.com/v1')}/chat/completions"
+            
+            payload = {
+                'model': model,
+                'messages': messages,
+                'stream': kwargs.get('stream', False),
+                'temperature': kwargs.get('temperature', 0.7),
+                'max_tokens': kwargs.get('max_tokens', 2048)
+            }
+            
+            headers = {
+                'Authorization': f"Bearer {cfg['config']['api_key']}",
+                'Content-Type': 'application/json'
+            }
+            
+            timeout = aiohttp.ClientTimeout(total=cfg['config'].get('timeout', 120))
+            
+            async with self.session.post(url, json=payload, headers=headers, timeout=timeout) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    
+                    # Обновляем статистику
+                    usage = data.get('usage', {})
+                    tokens = usage.get('total_tokens', 0)
+                    cost = self._calculate_cost(provider, model, usage)
+                    
+                    self.usage_stats['total_tokens'] += tokens
+                    self.usage_stats['total_cost'] += cost
+                    self.usage_stats['requests_count'] += 1
+                    
+                    logger.debug(f"☁️ Cloud {provider}/{model}: {tokens} tokens, ${cost:.4f}")
+                    
+                    return data
+                else:
+                    error_text = await resp.text()
+                    self.usage_stats['errors_count'] += 1
+                    raise Exception(f"Cloud API error {resp.status}: {error_text}")
+                    
+        except asyncio.TimeoutError:
+            self.usage_stats['errors_count'] += 1
+            raise Exception("Cloud API timeout")
+        except Exception as e:
+            self.usage_stats['errors_count'] += 1
+            logger.error(f"Cloud generation failed: {e}")
+            raise
+    
+    def _calculate_cost(self, provider: str, model: str, usage: Dict) -> float:
+        """Calculation of the request cost"""
+        models = self.providers[provider]['models']
+        model_config = models.get(model, {})
+        
+        input_tokens = usage.get('prompt_tokens', 0)
+        output_tokens = usage.get('completion_tokens', 0)
+        
+        cost_per_input = model_config.get('cost_per_1k_input', 0.001)
+        cost_per_output = model_config.get('cost_per_1k_output', 0.002)
+        
+        return (input_tokens / 1000) * cost_per_input + (output_tokens / 1000) * cost_per_output
+
+
+class RoutingDecisionEngine:
+    """Decision engine: Cloud vs on-premises"""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.policy = config.get('cloud_routing_policy', {})
+        self.thresholds = self.policy.get('thresholds', {})
+        self.weights = self.policy.get('criteria_weights', {})
+        self.conditions = self.policy.get('conditions', {})
+        self.cost_calculator = CostVectorCalculator()
+    
+    def evaluate_request(self, request: LLMRequest, nodes: List[NodeState]) -> Dict[str, Any]:
+        """Evaluation of the request according to all criteria"""
+        
+        # Checking if the cloud is enabled
+        cloud_enabled = self._is_cloud_enabled()
+        if not cloud_enabled:
+            return {
+                'final_decision': 'local',
+                'confidence': 1.0,
+                'cloud_score': 0.0,
+                'reason': 'Cloud disabled in configuration'
+            }
+        
+        scores = {}
+        total_score = 0.0
+        total_weight = 0.0
+        
+        # 1. Model availability
+        model_available = self._is_model_available_locally(request.model, nodes)
+        if not model_available:
+            return {
+                'final_decision': 'cloud_required',
+                'confidence': 1.0,
+                'cloud_score': 1.0,
+                'reason': f"Model {request.model} not available locally"
+            }
+        
+        # 2. Confidentiality
+        if self._has_private_data(request):
+            return {
+                'final_decision': 'cloud_forbidden',
+                'confidence': 1.0,
+                'cloud_score': 0.0,
+                'reason': "Request contains PII/confidential data"
+            }
+        
+        # 3. Queue
+        queue_score = self._evaluate_queue(nodes)
+        scores['queue_overload'] = queue_score
+        total_score += queue_score['score'] * self.weights.get('queue_overload', 0.8)
+        total_weight += self.weights.get('queue_overload', 0.8)
+        
+        # 4. GPU util
+        gpu_score = self._evaluate_gpu(nodes)
+        scores['gpu_high_util'] = gpu_score
+        total_score += gpu_score['score'] * self.weights.get('gpu_high_util', 0.7)
+        total_weight += self.weights.get('gpu_high_util', 0.7)
+        
+        # 5. VRAM
+        vram_score = self._evaluate_vram(request, nodes)
+        scores['vram_shortage'] = vram_score
+        total_score += vram_score['score'] * self.weights.get('vram_shortage', 0.6)
+        total_weight += self.weights.get('vram_shortage', 0.6)
+        
+        # 6. Economy
+        cost_score = self._evaluate_cost(request, nodes)
+        scores['cost_effectiveness'] = cost_score
+        total_score += cost_score['score'] * self.weights.get('cost_effectiveness', 0.5)
+        total_weight += self.weights.get('cost_effectiveness', 0.5)
+        
+        # 7. Time of day
+        time_score = self._evaluate_time()
+        scores['night_hours'] = time_score
+        total_score += time_score['score'] * self.weights.get('night_hours', 0.3)
+        total_weight += self.weights.get('night_hours', 0.3)
+        
+        # 8. Model Size
+        size_score = self._evaluate_model_size(request)
+        scores['large_model'] = size_score
+        total_score += size_score['score'] * self.weights.get('large_model', 0.4)
+        total_weight += self.weights.get('large_model', 0.4)
+        
+        #  Final score
+        cloud_score = total_score / total_weight if total_weight > 0 else 0
+        
+        # Applying sensitivity
+        cost_sensitivity = self.policy.get('cost_sensitivity', 0.4)
+        latency_sensitivity = self.policy.get('latency_sensitivity', 0.6)
+        adjusted_score = cloud_score * (1 + cost_sensitivity * 0.2 - latency_sensitivity * 0.1)
+        adjusted_score = max(0, min(1, adjusted_score))
+        
+        # Decision making
+        threshold = self.policy.get('decision_threshold', 0.6)
+        
+        if adjusted_score >= threshold:
+            decision = 'cloud'
+            confidence = adjusted_score
+            reason = f"Cloud score {adjusted_score:.2f} >= threshold {threshold}"
+        else:
+            decision = 'local'
+            confidence = 1 - adjusted_score
+            reason = f"Cloud score {adjusted_score:.2f} < threshold {threshold}"
+        
+        return {
+            'final_decision': decision,
+            'confidence': confidence,
+            'cloud_score': adjusted_score,
+            'raw_score': cloud_score,
+            'threshold': threshold,
+            'reason': reason,
+            'scores': scores,
+            'components': {
+                'queue': queue_score,
+                'gpu': gpu_score,
+                'vram': vram_score,
+                'cost': cost_score,
+                'time': time_score,
+                'size': size_score
+            }
+        }
+    
+    def _is_cloud_enabled(self) -> bool:
+        """Checking whether the cloud is enabled"""
+        cloud_providers = self.config.get('cloud_providers', {})
+        return any(p.get('enabled', False) for p in cloud_providers.values())
+    
+    def _is_model_available_locally(self, model: str, nodes: List[NodeState]) -> bool:
+        """Checking the availability of the model locally"""
+        for node in nodes:
+            if model in node.available_models:
+                return True
+        return False
+    
+    def _has_private_data(self, request: LLMRequest) -> bool:
+        """UNREALIZED! Checking for confidential data"""
+        # You can add a keyword or classification check.
+        never_cloud = self.conditions.get('never_cloud', {})
+        classifications = never_cloud.get('data_classification', [])
+        # Here you can add the logic for defining PII
+        return False
+    
+    def _evaluate_queue(self, nodes: List[NodeState]) -> Dict:
+        """Estimating queue length"""
+        if not nodes:
+            return {'score': 0.0, 'decision': 'unknown', 'reason': 'No nodes'}
+        
+        avg_queue = sum(n.queue_length for n in nodes) / len(nodes)
+        high = self.thresholds.get('queue_length_high', 5)
+        critical = self.thresholds.get('queue_length_critical', 10)
+        
+        if avg_queue >= critical:
+            return {'score': 1.0, 'decision': 'cloud_required', 'reason': f"Queue {avg_queue:.1f} >= {critical}"}
+        elif avg_queue >= high:
+            score = (avg_queue - high) / (critical - high)
+            return {'score': min(0.9, 0.2 + score * 0.7), 'decision': 'cloud_preferred', 'reason': f"Queue {avg_queue:.1f}"}
+        else:
+            return {'score': 0.0, 'decision': 'local_preferred', 'reason': f"Queue {avg_queue:.1f}"}
+    
+    def _evaluate_gpu(self, nodes: List[NodeState]) -> Dict:
+        """GPU Load Estimation"""
+        if not nodes:
+            return {'score': 0.0, 'decision': 'unknown', 'reason': 'No nodes'}
+        
+        avg_gpu = sum(n.gpu_utilization for n in nodes) / len(nodes)
+        high = self.thresholds.get('gpu_utilization_high', 70)
+        critical = self.thresholds.get('gpu_utilization_critical', 90)
+        
+        if avg_gpu >= critical:
+            return {'score': 1.0, 'decision': 'cloud_required', 'reason': f"GPU {avg_gpu:.1f}% >= {critical}%"}
+        elif avg_gpu >= high:
+            score = (avg_gpu - high) / (critical - high)
+            return {'score': min(0.9, 0.2 + score * 0.7), 'decision': 'cloud_preferred', 'reason': f"GPU {avg_gpu:.1f}%"}
+        else:
+            return {'score': 0.0, 'decision': 'local_preferred', 'reason': f"GPU {avg_gpu:.1f}%"}
+    
+    def _evaluate_vram(self, request: LLMRequest, nodes: List[NodeState]) -> Dict:
+        """Evaluation of available VRAM"""
+        if not nodes:
+            return {'score': 0.0, 'decision': 'unknown', 'reason': 'No nodes'}
+        
+        avg_vram = sum(n.memory_free for n in nodes) / len(nodes)
+        required = request.required_vram
+        ratio = self.thresholds.get('vram_shortage_ratio', 1.3)
+        
+        needed = required * ratio
+        
+        if avg_vram < needed:
+            score = min(1.0, (needed - avg_vram) / needed)
+            return {'score': score, 'decision': 'cloud_preferred', 'reason': f"VRAM {avg_vram:.0f}MB < {needed:.0f}MB"}
+        else:
+            return {'score': 0.0, 'decision': 'local_preferred', 'reason': f"VRAM {avg_vram:.0f}MB"}
+    
+    def _evaluate_cost(self, request: LLMRequest, nodes: List[NodeState]) -> Dict:
+        """Cost-effectiveness assessment based on the actual GPU power"""
+        estimated_tokens = request.prompt_tokens + request.expected_output_tokens
+        
+        # Cost of the cloud
+        cloud_cost = self._calculate_cloud_cost(request)
+        
+        # Local cost (including GPU capacity)
+        local_cost = self._calculate_local_cost(request, nodes)
+        
+        threshold = self.thresholds.get('cost_advantage_threshold', 0.7)
+        
+        if cloud_cost < local_cost * threshold:
+            return {'score': 1.0, 'decision': 'cloud_preferred', 'reason': f"Cloud ${cloud_cost:.4f} < local ${local_cost:.4f}"}
+        elif cloud_cost < local_cost:
+            return {'score': 0.5, 'decision': 'neutral', 'reason': f"Cloud ${cloud_cost:.4f} < local ${local_cost:.4f}"}
+        else:
+            return {'score': 0.0, 'decision': 'local_preferred', 'reason': f"Local ${local_cost:.4f} <= cloud ${cloud_cost:.4f}"}
+
+    def _calculate_local_cost(self, request: LLMRequest, nodes: List[NodeState]) -> float:
+        """
+        Calculating the cost of local generation based on GPU power and speed
+        
+        TODO: Monitoring the actual generation rate in development
+        The average speed of 50 tokens is currently used./sec
+        In the future, it will be taken from node.performance_decode
+        """
+        total_tokens = request.prompt_tokens + request.expected_output_tokens
+        
+        # 1. GPU Power (from NodeState)
+        if nodes:
+            # We take the average power across all nodes.
+            avg_power = sum(n.gpu_power_max for n in nodes) / len(nodes)
+            # We use an average power, but not more than 300W
+            power_watts = min(avg_power, 300.0)
+        else:
+            power_watts = 200.0  # default
+        
+        # 2. Electricity price (from the configuration)
+        electricity_price_per_kwh = self.config.get('electricity_price_per_kwh', 0.15)
+        
+        # 3. Generation rate (tokens/sec)
+        # TEMPORARILY: we use an average rate of 50 tokens/sec
+        # TODO: In the future, take from node.performance_decode (real speed)
+        generation_speed_tokens_per_sec = 50.0
+        
+        # Calculation
+        time_seconds = total_tokens / generation_speed_tokens_per_sec
+        time_hours = time_seconds / 3600
+        power_kw = power_watts / 1000
+        energy_kwh = power_kw * time_hours
+        cost = energy_kwh * electricity_price_per_kwh
+        
+        debug_logger.debug(f"⚡ Local cost: {total_tokens} tokens, {power_watts:.0f}W, ${cost:.6f}")
+        
+        return cost
+
+    def _calculate_cloud_cost(self, request: LLMRequest) -> float:
+        """
+        Calculating the cost of cloud generation from the config
+        """
+        # Getting the model configuration from cloud_providers
+        cloud_config = self.config.get('cloud_providers', {})
+        openai_config = cloud_config.get('openai', {})
+        models = openai_config.get('models', {})
+        
+        # Mapping the model
+        cloud_model = self._map_model_to_cloud(request.model)
+        model_config = models.get(cloud_model, {})
+        
+        # Cost from the config
+        cost_per_1k_input = model_config.get('cost_per_1k_input', 0.001)
+        cost_per_1k_output = model_config.get('cost_per_1k_output', 0.002)
+        
+        # Calculation
+        input_cost = (request.prompt_tokens / 1000) * cost_per_1k_input
+        output_cost = (request.expected_output_tokens / 1000) * cost_per_1k_output
+        
+        return input_cost + output_cost
+
+    def _map_model_to_cloud(self, model: str) -> str:
+        """Mapping a local model to a cloud one"""
+        mapping = {
+            'llama3.1:8b': 'gpt-4o-mini',
+            'llama3:8b': 'gpt-4o-mini',
+            'qwen2:7b': 'gpt-4o-mini',
+            'llama3.2:1b': 'gpt-4o-mini',
+        }
+        return mapping.get(model, 'gpt-4o-mini')
+    
+    def _evaluate_time(self) -> Dict:
+        """Estimating the time of day"""
+        current_hour = datetime.now().hour
+        night_start = self.thresholds.get('night_hours_start', 22)
+        night_end = self.thresholds.get('night_hours_end', 6)
+        
+        if current_hour >= night_start or current_hour < night_end:
+            return {'score': 0.5, 'decision': 'cloud_preferred', 'reason': f"Night {current_hour}:00"}
+        else:
+            return {'score': 0.0, 'decision': 'neutral', 'reason': f"Day {current_hour}:00"}
+    
+    def _evaluate_model_size(self, request: LLMRequest) -> Dict:
+        """Estimating the size of the model"""
+        model_size_gb = request.required_vram / 1024
+        large = self.thresholds.get('model_size_large_gb', 24)
+        
+        if model_size_gb >= large:
+            return {'score': 0.6, 'decision': 'cloud_preferred', 'reason': f"Model {model_size_gb:.1f}GB"}
+        else:
+            return {'score': 0.0, 'decision': 'local_preferred', 'reason': f"Model {model_size_gb:.1f}GB"}
+
 
 
 class PolicyDrivenOptimizer:
@@ -298,6 +712,29 @@ class PBDRClientSync:
         logger.info(f"Current policy: {self.current_policy}")
         logger.info(f"Max concurrent requests: {self.max_concurrent}")
         
+        self.cloud_config = self.config.get('cloud_providers', {})
+        self.cloud_enabled = any(
+            provider.get('enabled', False) 
+            for provider in self.cloud_config.values()
+        )
+        
+        if self.cloud_enabled:
+            logger.info("☁️ Cloud providers detected and enabled")
+            self.cloud_interface = CloudLLMInterface(self.config)
+            self.decision_engine = RoutingDecisionEngine(self.config)
+        else:
+            logger.info("🏠 No cloud providers configured - using LOCAL ONLY mode")
+            self.cloud_interface = None
+            self.decision_engine = None
+        
+        # Cloud statistics
+        self.stats.update({
+            'mode': 'hybrid' if self.cloud_enabled else 'local_only',
+            'cloud_available': self.cloud_enabled,
+            'cloud_routed': 0,
+            'local_routed': 0
+        })
+        
     def _update_policy(self):
         policy = self.policies.get(self.current_policy, {})
         self.config['policy_vector'] = policy.get('weights', [1.0] * 10)
@@ -318,13 +755,109 @@ class PBDRClientSync:
         # Initial node discovery
         await self._discover_nodes()
         
+        if self.cloud_enabled and self.cloud_interface:
+            await self.cloud_interface.start(self.session)
+            logger.info("☁️ Cloud interface initialized")
+        
         # Launch background tasks
         asyncio.create_task(self._discovery_loop())
         asyncio.create_task(self._stats_reporter())
         
         # Launch API server
         await self._run_api_server()
+
+
+
+
+
+
+    async def _handle_cloud_stream(self, provider: str, model: str, messages: List[Dict],
+                                   request_id: str, web_request: web.Request, **kwargs) -> web.StreamResponse:
+        """
+        Proxying the streaming response from the cloud provider to the client
+        Supports SSE (Server-Sent Events) format
+        """
         
+        if not self.cloud_enabled or not self.cloud_interface:
+            raise ValueError("Cloud not enabled or not initialized")
+        
+        if provider not in self.cloud_interface.providers:
+            raise ValueError(f"Provider {provider} not configured")
+        
+        cfg = self.cloud_interface.providers[provider]
+        
+        try:
+            url = f"{cfg['config'].get('base_url', 'https://api.openai.com/v1')}/chat/completions"
+            
+            payload = {
+                'model': model,
+                'messages': messages,
+                'stream': True,  # Forcibly enabling streaming
+                'temperature': kwargs.get('temperature', 0.7),
+                'max_tokens': kwargs.get('max_tokens', 2048)
+            }
+            
+            headers = {
+                'Authorization': f"Bearer {cfg['config']['api_key']}",
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream'
+            }
+            
+            timeout = aiohttp.ClientTimeout(total=cfg['config'].get('timeout', 120))
+            
+            # Creating a StreamResponse for the client
+            response = web.StreamResponse()
+            response.headers['Content-Type'] = 'text/event-stream'
+            response.headers['Cache-Control'] = 'no-cache'
+            response.headers['Connection'] = 'keep-alive'
+            response.headers['X-Accel-Buffering'] = 'no'  
+            
+            await response.prepare(web_request)
+            
+            logger.info(f"☁️ Cloud stream started for {request_id}: {provider}/{model}")
+            
+            # Sending a request to the cloud API with streaming
+            async with self.session.post(url, json=payload, headers=headers, timeout=timeout) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    error_msg = f'data: {{"error": "Cloud API error {resp.status}: {error_text}"}}\n\n'
+                    await response.write(error_msg.encode())
+                    await response.write_eof()
+                    return response
+                
+                # We are proxying the SSE stream from the cloud to the client
+                async for chunk in resp.content.iter_any():
+                    if chunk:
+                        try:
+                            await response.write(chunk)
+                            await response.drain()  
+                        except Exception as e:
+                            logger.error(f"Stream write error for {request_id}: {e}")
+                            break
+                
+                await response.write_eof()
+                logger.info(f"☁️ Cloud stream completed for {request_id}")
+                
+            return response
+            
+        except asyncio.TimeoutError:
+            logger.error(f"Cloud stream timeout for {request_id}")
+            error_msg = 'data: {"error": "Cloud API timeout"}\n\n'
+            try:
+                await response.write(error_msg.encode())
+                await response.write_eof()
+            except:
+                pass
+            return response
+        except Exception as e:
+            logger.error(f"Cloud stream error for {request_id}: {e}")
+            error_msg = f'data: {{"error": "{str(e)}"}}\n\n'
+            try:
+                await response.write(error_msg.encode())
+                await response.write_eof()
+            except:
+                pass
+            return response        
         
         
     async def _get_nodes_snapshot(self) -> List[NodeState]:
@@ -399,6 +932,10 @@ class PBDRClientSync:
                     return None
                 
                 data = await resp.json()
+                gpu_data = data.get('gpu', {})
+                power_max = gpu_data.get('power_max', 200.0)
+                if power_max == 0:
+                    power_max = 200.0 
                 
                 state = NodeState(
                     node_id=node_id,
@@ -421,7 +958,9 @@ class PBDRClientSync:
                     max_queue=data.get('limits', {}).get('max_queue', 10),
                     estimated_finish_ms=data.get('queue', {}).get('estimated_finish_ms', 0.0),
                     average_job_duration_ms=data.get('queue', {}).get('average_job_duration_ms', 0.0),
-                    last_update=time.time()
+                    last_update=time.time(),
+                    gpu_power_max=power_max,
+                    gpu_name=gpu_data.get('gpu_name', 'Unknown GPU')
                 )
                 return node_id, state
                 
@@ -581,81 +1120,100 @@ class PBDRClientSync:
 
     async def _process_request(self, request_id: str, original_data: Dict, request: web.Request) -> Any:
         """
-        Process a single request in isolation.
-        Each request gets its own node selection and failover.
+        Process a single request in isolation with hybrid routing support.
         """
         
         try:
             stream = original_data.get('stream', False)
-            
-            # ============================================================
-            # PRODUCTION: Each request gets its own node snapshot
-            # This ensures node selection is independent per request
-            # ============================================================
             nodes_snapshot = await self._get_nodes_snapshot()
-            
-            # Create LLMRequest for this specific request
             req = self._create_llm_request(original_data)
             
             # ============================================================
-            # PRODUCTION: Independent node selection per request
-            # Request can use a different (better) node 
+            # HYBRID ROUTING
             # ============================================================
-            eligible_nodes = self.optimizer._apply_hard_constraints(nodes_snapshot, req)
             
-            if not eligible_nodes:
-                logger.warning(f"Request {request_id}: No eligible nodes for model {req.model}")
-                return web.json_response({
-                    'error': 'No suitable node found',
-                    'details': {
-                        'model': req.model,
-                        'available_nodes': len(nodes_snapshot),
-                        'required_vram': req.required_vram
-                    }
-                }, status=503)
+            # Mode 1: LOCAL ONLY (if the cloud is turned off)
+            if not self.cloud_enabled:
+                logger.info(f"🏠 LOCAL ONLY: Processing {request_id}")
+                return await self._process_local_only(request_id, req, original_data, request, nodes_snapshot)
             
-            logger.info(f"Request {request_id}: Found {len(eligible_nodes)} eligible nodes")
+            # Mode 2: HYBRID (making a decision)
+            decision = self.decision_engine.evaluate_request(req, nodes_snapshot)
             
-            # ============================================================
-            # PRODUCTION: Independent failover per request
-            # Each request tries nodes sequentially on its own
-            # ============================================================
-            result = await self._try_nodes_sequential(
-                eligible_nodes, 
-                original_data, 
-                request_id,
-                request
-            )
+            logger.info(f"📊 Decision for {request_id}: {decision['final_decision']} (score={decision.get('cloud_score', 0):.2f})")
+            logger.debug(f"   Reason: {decision.get('reason', 'N/A')}")
             
-            if isinstance(result, dict) and 'error' in result:
-                logger.error(f"Request {request_id} failed: {result['error']}")
-                return web.json_response(result, status=503)
+            # Cloud routing
+            if decision['final_decision'] in ['cloud', 'cloud_required']:
+                logger.info(f"☁️ Routing {request_id} to CLOUD")
+                self.stats['cloud_routed'] += 1
+                
+                try:
+                    result = await self._handle_cloud_request(
+                        req, original_data, request_id, request
+                    )
+                    return result
+                except Exception as e:
+                    logger.error(f"Cloud request failed: {e}")
+                    
+                    # Fallback to local
+                    if self.config.get('cloud_routing_policy', {}).get('fallback_strategy', {}).get('cloud_fallback_to_local', True):
+                        logger.info(f"🔄 Falling back to LOCAL for {request_id}")
+                        return await self._process_local_only(request_id, req, original_data, request, nodes_snapshot)
+                    else:
+                        raise
             
-            # Return result
-            if stream:
-                return result  # StreamResponse
+            # Local routing
             else:
-                return web.json_response(result)  # JSON response
+                logger.info(f"🏠 Routing {request_id} to LOCAL cluster")
+                self.stats['local_routed'] += 1
+                
+                result = await self._process_local_only(request_id, req, original_data, request, nodes_snapshot)
+                
+                # If the local request has dropped, we try the cloud.
+                if isinstance(result, dict) and 'error' in result:
+                    fallback = self.config.get('cloud_routing_policy', {}).get('fallback_strategy', {}).get('local_fallback_to_cloud', True)
+                    if fallback:
+                        logger.info(f"🔄 Local failed for {request_id}, trying CLOUD fallback")
+                        try:
+                            return await self._handle_cloud_request(
+                                req, original_data, request_id, request
+                            )
+                        except Exception as e:
+                            logger.error(f"Cloud fallback also failed: {e}")
+                
+                return result
                 
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.error(f"Request {request_id} processing error: {e}")
             raise
+            
+            
 
     def _create_llm_request(self, data: Dict) -> LLMRequest:
         """Creating an LLMRequest from the original request"""
         model = data.get('model', '')
         messages = data.get('messages', [])
-        prompt = messages[-1].get('content', '') if messages else ''
         stream = data.get('stream', False)
         temperature = data.get('temperature', 0.7)
         max_tokens = data.get('max_tokens', 2048)
+
+        full_context = ""
+        for msg in messages:
+            role = msg.get('role', 'user')
+            content = msg.get('content', '')
+            full_context += f"{role}: {content}\n"
+        
+        prompt_tokens = len(full_context) // 4
+        
+        prompt = messages[-1].get('content', '') if messages else ''
         
         return LLMRequest(
             request_id=f"req_{int(time.time())}_{hashlib.md5(str(data).encode()).hexdigest()[:8]}",
             model=model,
-            prompt_tokens=len(prompt) // 4,
+            prompt_tokens=prompt_tokens,  
             expected_output_tokens=max_tokens,
             required_vram=self._estimate_vram(model),
             context_length=8192,
@@ -695,31 +1253,158 @@ class PBDRClientSync:
         })
 
     async def _handle_models(self, request):
-        """Retrieves the list of all available models"""
+        """
+        Retrieves the list of all available models (local + cloud)
+        """
         models_by_node = {}
+        all_models = set()
+        
+        # 1. Local models from nodes
         for node_id, node in self.nodes.items():
             models_by_node[node_id] = {
                 'hostname': node.hostname,
                 'ip': node.ip,
                 'loaded_model': node.loaded_model,
                 'available_models': node.available_models,
-                'status': 'online' if node.healthy else 'offline'
+                'status': 'online' if node.healthy else 'offline',
+                'type': 'local'
             }
-        
-        # We collect all the unique models
-        all_models = set()
-        for node in self.nodes.values():
             all_models.update(node.available_models)
         
+        # 2. Cloud models from the configuration
+        cloud_models = {}
+        if self.cloud_enabled and self.cloud_interface:
+            for provider_name, provider_data in self.cloud_interface.providers.items():
+                models = provider_data.get('models', {})
+                for model_name, model_config in models.items():
+                    # Adding the model to the general list with the provider prefix
+                    full_model_name = f"{provider_name}/{model_name}"
+                    all_models.add(full_model_name)
+                    
+                    # Saving information about the model
+                    cloud_models[full_model_name] = {
+                        'provider': provider_name,
+                        'model': model_name,
+                        'cost_per_1k_input': model_config.get('cost_per_1k_input', 0),
+                        'cost_per_1k_output': model_config.get('cost_per_1k_output', 0),
+                        'context_window': model_config.get('context_window', 0),
+                        'latency_estimate_ms': model_config.get('latency_estimate_ms', 0),
+                        'type': 'cloud'
+                    }
+        
+        # 3. Forming the response
         return web.json_response({
             'total_nodes': len(self.nodes),
             'total_models': len(all_models),
             'all_models': sorted(list(all_models)),
-            'nodes': models_by_node
+            'nodes': models_by_node,
+            'cloud_models': cloud_models,
+            'cloud_enabled': self.cloud_enabled,
+            'routing_mode': 'hybrid' if self.cloud_enabled else 'local_only'
         })
         
 
+    async def _process_local_only(self, request_id: str, req: LLMRequest, original_data: Dict, 
+                                   request: web.Request, nodes_snapshot: List[NodeState]) -> Any:
+        """
+        Original local logic with 10 cost vectors
+        """
+        
+        stream = original_data.get('stream', False)
+        
+        # Applying hard constraints
+        eligible_nodes = self.optimizer._apply_hard_constraints(nodes_snapshot, req)
+        
+        if not eligible_nodes:
+            logger.warning(f"Request {request_id}: No eligible nodes for model {req.model}")
+            return web.json_response({
+                'error': 'No suitable node found',
+                'details': {
+                    'model': req.model,
+                    'available_nodes': len(nodes_snapshot),
+                    'required_vram': req.required_vram
+                }
+            }, status=503)
+        
+        logger.info(f"Request {request_id}: Found {len(eligible_nodes)} eligible nodes")
+        
+        # We use the Policy-Driven Optimizer with 10 cost vectors
+        result = await self._try_nodes_sequential(
+            eligible_nodes, 
+            original_data, 
+            request_id,
+            request
+        )
+        
+        if isinstance(result, dict) and 'error' in result:
+            logger.error(f"Request {request_id} failed: {result['error']}")
+            return web.json_response(result, status=503)
+        
+        if stream:
+            return result
+        else:
+            return web.json_response(result)
+        
+        
+        
+    async def _handle_cloud_request(self, req: LLMRequest, original_data: Dict,
+                                    request_id: str, web_request: web.Request) -> Any:
+        """
+        Request processing via a cloud provider
+        Supports both regular queries and streaming
+        """
+        
+        if not self.cloud_enabled or not self.cloud_interface:
+            raise ValueError("Cloud not enabled or not initialized")
+        
+        provider = 'openai'  # Default, can be selected dynamically
+        stream = original_data.get('stream', False)
+        
+        try:
+            messages = original_data.get('messages', [])
+            cloud_model = self._map_model_to_cloud(req.model)
+            
+            # Streaming support
+            if stream:
+                logger.info(f"☁️ Cloud STREAM for {request_id}: {provider}/{cloud_model}")
+                return await self._handle_cloud_stream(
+                    provider=provider,
+                    model=cloud_model,
+                    messages=messages,
+                    request_id=request_id,
+                    web_request=web_request,
+                    temperature=req.temperature,
+                    max_tokens=req.max_tokens
+                )
+            
+            # A regular (non-streaming) request
+            logger.info(f"☁️ Calling cloud API: {provider}/{cloud_model}")
+            
+            result = await self.cloud_interface.generate(
+                provider=provider,
+                model=cloud_model,
+                messages=messages,
+                stream=False,
+                temperature=req.temperature,
+                max_tokens=req.max_tokens
+            )
+            
+            return web.json_response(result)
+            
+        except Exception as e:
+            logger.error(f"Cloud API error: {e}")
+            raise
 
+    def _map_model_to_cloud(self, model: str) -> str:
+        """Mapping the local model to the cloud is AN EXPERIMENTAL FEATURE!"""
+        # Simple mapping, can be expanded
+        mapping = {
+            'llama3.1:8b': 'gpt-4o-mini',
+            'llama3:8b': 'gpt-4o-mini',
+            'qwen2:7b': 'gpt-4o-mini',
+            'llama3.2:1b': 'gpt-4o-mini',
+        }
+        return mapping.get(model, 'gpt-4o-mini')
 
 
 
@@ -826,12 +1511,22 @@ class PBDRClientSync:
             
         
     async def _handle_models_openai(self, request):
-        """Retrieves the list of models in the OpenAI API (/v1/models) format"""
+        """
+        Retrieves the list of models in the OpenAI API (/v1/models) format
+        Includes both local and cloud models
+        """
         all_models = set()
+        
+        # local models
         for node in self.nodes.values():
             all_models.update(node.available_models)
         
-        # Формат OpenAI API
+        # cloud models
+        if self.cloud_enabled and self.cloud_interface:
+            for provider_name, provider_data in self.cloud_interface.providers.items():
+                for model_name in provider_data.get('models', {}).keys():
+                    all_models.add(f"{provider_name}/{model_name}")
+        
         return web.json_response({
             "object": "list",
             "data": [
@@ -839,7 +1534,8 @@ class PBDRClientSync:
                     "id": model,
                     "object": "model",
                     "created": int(time.time()),
-                    "owned_by": "pbdr-cluster"
+                    "owned_by": "pbdr-cluster",
+                    "type": "local" if ":" in model else "cloud"
                 }
                 for model in sorted(all_models)
             ]
