@@ -1395,7 +1395,7 @@ class WebInterface:
                         <div class="metrics-grid">
                             <div class="metric-item">
                                 <div class="metric-label">GPU utilization</div>
-                                <div class="metric-value">${gpu.gpu_utilization ? gpu.gpu_utilization.toFixed(1) + '%' : 'N/A'}</div>
+                                <div class="metric-value">${gpu.gpu_utilization !== undefined && gpu.gpu_utilization !== null ? gpu.gpu_utilization.toFixed(1) + '%' : 'N/A'}</div>
                             </div>
                             <div class="metric-item">
                                 <div class="metric-label">Temperature</div>
@@ -1454,25 +1454,31 @@ class WebInterface:
                 const queue = data.queue || {};
                 const models = data.models || {};
                 
+                // Исправлено: используем gpu.gpu_utilization для GPU
+                const gpuUtil = (gpu.gpu_utilization !== undefined && gpu.gpu_utilization !== null) ? gpu.gpu_utilization.toFixed(1) + '%' : 'N/A';
+                const cpuLoad = (cpu.cpu_load !== undefined && cpu.cpu_load !== null) ? cpu.cpu_load.toFixed(1) + '%' : 'N/A';
+                const temp = (gpu.temperature !== undefined && gpu.temperature !== null) ? gpu.temperature.toFixed(1) + '°C' : 'N/A';
+                const vramFree = (gpu.memory_free !== undefined && gpu.memory_free !== null) ? (gpu.memory_free / 1024).toFixed(1) + ' GB' : 'N/A';
+                
                 document.getElementById('metricsContent').innerHTML = `
                 <div style="margin-bottom: 1rem; padding: 0.5rem; background: #f7fafc; border-radius: 0.25rem;">
                     <h3>🖥️ ${data.hostname || ip} (${ip})</h3>
                     <div class="metrics-grid">
                         <div class="metric-item">
                             <div class="metric-label">GPU Utilization</div>
-                            <div class="metric-value">${gpu.gpu_utilization ? gpu.gpu_utilization.toFixed(1) + '%' : 'N/A'}</div>
+                            <div class="metric-value">${gpuUtil}</div>
                         </div>
                         <div class="metric-item">
                             <div class="metric-label">Temperature</div>
-                            <div class="metric-value">🌡️ ${gpu.temperature ? gpu.temperature.toFixed(1) + '°C' : 'N/A'}</div>
+                            <div class="metric-value">🌡️ ${temp}</div>
                         </div>
                         <div class="metric-item">
                             <div class="metric-label">VRAM free</div>
-                            <div class="metric-value">${gpu.memory_free ? (gpu.memory_free / 1024).toFixed(1) + ' GB' : 'N/A'}</div>
+                            <div class="metric-value">${vramFree}</div>
                         </div>
                         <div class="metric-item">
                             <div class="metric-label">CPU load</div>
-                            <div class="metric-value">${cpu.cpu_load ? cpu.cpu_load.toFixed(1) + '%' : 'N/A'}</div>
+                            <div class="metric-value">${cpuLoad}</div>
                         </div>
                         <div class="metric-item">
                             <div class="metric-label">Queue length</div>
@@ -1498,78 +1504,78 @@ class WebInterface:
         }
         
 
-async function showConfig(ip, deviceType) {
-    currentDeviceIp = ip;
-    currentDeviceType = deviceType;
-    
-    document.getElementById('configDeviceInfo').innerHTML = '<p><strong>Device:</strong> ' + ip + ' (' + deviceType + ')</p>';
-    document.getElementById('configSource').innerHTML = '';
-    document.getElementById('configModal').classList.add('active');
-    document.getElementById('configEditor').value = 'Loading configuration from device...';
-    
-    try {
-        const response = await fetch('/api/fetch-config/' + ip);
-        const data = await response.json();
-        
-        console.log('Config response:', data);
-        
-        
-        let configData = null;
-        let source = 'unknown';
-        
-        if (data.config && typeof data.config === 'object') {
-            // Формат: { config: {...}, source: 'remote' }
-            configData = data.config;
-            source = data.source || 'unknown';
-        } else if (data.error) {
-            // Ошибка
-            document.getElementById('configEditor').value = 'Error: ' + data.error;
-            document.getElementById('configSource').innerHTML = '❌ ' + data.error;
-            document.getElementById('configSource').className = 'config-source local';
-            return;
-        } else if (typeof data === 'object' && Object.keys(data).length > 0) {
+        async function showConfig(ip, deviceType) {
+            currentDeviceIp = ip;
+            currentDeviceType = deviceType;
             
-            if (data.host !== undefined || data.monitor_port !== undefined || 
-                data.buffer_size !== undefined || data.servers !== undefined) {
-                // Это прямая конфигурация
-                configData = data;
-                source = 'remote';
-            } else {
-                // Неизвестный формат
-                configData = data;
-                source = 'unknown';
+            document.getElementById('configDeviceInfo').innerHTML = '<p><strong>Device:</strong> ' + ip + ' (' + deviceType + ')</p>';
+            document.getElementById('configSource').innerHTML = '';
+            document.getElementById('configModal').classList.add('active');
+            document.getElementById('configEditor').value = 'Loading configuration from device...';
+            
+            try {
+                const response = await fetch('/api/fetch-config/' + ip);
+                const data = await response.json();
+                
+                console.log('Config response:', data);
+                
+                
+                let configData = null;
+                let source = 'unknown';
+                
+                if (data.config && typeof data.config === 'object') {
+                    // Формат: { config: {...}, source: 'remote' }
+                    configData = data.config;
+                    source = data.source || 'unknown';
+                } else if (data.error) {
+                    // Ошибка
+                    document.getElementById('configEditor').value = 'Error: ' + data.error;
+                    document.getElementById('configSource').innerHTML = '❌ ' + data.error;
+                    document.getElementById('configSource').className = 'config-source local';
+                    return;
+                } else if (typeof data === 'object' && Object.keys(data).length > 0) {
+                    
+                    if (data.host !== undefined || data.monitor_port !== undefined || 
+                        data.buffer_size !== undefined || data.servers !== undefined) {
+                        
+                        configData = data;
+                        source = 'remote';
+                    } else {
+                        
+                        configData = data;
+                        source = 'unknown';
+                    }
+                }
+                
+                if (configData) {
+                    
+                    document.getElementById('configEditor').value = JSON.stringify(configData, null, 2);
+                    
+                    
+                    const sourceEl = document.getElementById('configSource');
+                    if (source === 'remote') {
+                        sourceEl.innerHTML = 'Load from node (remote)';
+                        sourceEl.className = 'config-source remote';
+                    } else if (source === 'local') {
+                        sourceEl.innerHTML = '⚠️ Load from cfg (not data)';
+                        sourceEl.className = 'config-source local';
+                    } else {
+                        sourceEl.innerHTML = 'Config load';
+                        sourceEl.className = 'config-source remote';
+                    }
+                } else {
+                    document.getElementById('configEditor').value = 'Empty configuration';
+                    document.getElementById('configSource').innerHTML = '⚠️ Пустой ответ';
+                    document.getElementById('configSource').className = 'config-source local';
+                }
+            } catch (e) {
+                console.error('Error loading config:', e);
+                document.getElementById('configEditor').value = 'Error loading config: ' + e.message;
+                document.getElementById('configSource').innerHTML = '❌ Error load';
+                document.getElementById('configSource').className = 'config-source local';
             }
         }
-        
-        if (configData) {
-            
-            document.getElementById('configEditor').value = JSON.stringify(configData, null, 2);
-            
-            
-            const sourceEl = document.getElementById('configSource');
-            if (source === 'remote') {
-                sourceEl.innerHTML = 'Load from node (remote)';
-                sourceEl.className = 'config-source remote';
-            } else if (source === 'local') {
-                sourceEl.innerHTML = '⚠️ Load from cfg (not data)';
-                sourceEl.className = 'config-source local';
-            } else {
-                sourceEl.innerHTML = 'Config load';
-                sourceEl.className = 'config-source remote';
-            }
-        } else {
-            document.getElementById('configEditor').value = 'Empty configuration';
-            document.getElementById('configSource').innerHTML = '⚠️ Пустой ответ';
-            document.getElementById('configSource').className = 'config-source local';
-        }
-    } catch (e) {
-        console.error('Error loading config:', e);
-        document.getElementById('configEditor').value = 'Error loading config: ' + e.message;
-        document.getElementById('configSource').innerHTML = '❌ Error load';
-        document.getElementById('configSource').className = 'config-source local';
-    }
-}
-        
+                
         
         async function applyConfigToDevice() {
             if (!currentDeviceIp) return;
