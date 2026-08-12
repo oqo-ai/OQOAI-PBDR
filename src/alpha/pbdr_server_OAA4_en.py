@@ -51,6 +51,7 @@ class GPUInfo:
     cuda_version: str = ""
     temperature: float = 0.0
     power_draw: float = 0.0
+    power_max: float = 0.0
     utilization: float = 0.0
     memory_total: float = 0.0
     memory_used: float = 0.0
@@ -112,7 +113,7 @@ class NodeStatus:
 class HardwareMonitor:
     """
     Hardware monitoring
-    Supports NVIDIA, AMD (ROCm) and CPU
+    Supports NVIDIA (pynvml) and AMD (rocm-smi)
     """
     
     def __init__(self, config: Dict[str, Any]):
@@ -128,87 +129,266 @@ class HardwareMonitor:
     
     def _detect_gpu_type(self) -> str:
         """Defining the GPU type"""
-        if HAS_NVML:
-            try:
-                pynvml.nvmlInit()
-                pynvml.nvmlShutdown()
-                return "nvidia"
-            except:
-                pass
+        # We check NVIDIA via pynvml
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            pynvml.nvmlShutdown()
+            logger.info("✅ NVIDIA GPU detected via pynvml")
+            return "nvidia"
+        except:
+            pass
         
-        if HAS_ROCM:
-            try:
-                import rocm_smi
+        # We check AMD via rocm-smi
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['rocm-smi', '--showallinfo', '--json'],
+                capture_output=True, text=True, timeout=2.0
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                logger.info("✅ AMD GPU detected via rocm-smi")
                 return "amd"
-            except:
-                pass
+        except:
+            pass
         
+        logger.warning("⚠️ No GPU detected, using mock mode")
         return "none"
     
     def _init_gpu_library(self):
         """Initializing GPU libraries"""
-        if self.gpu_type == "nvidia" and HAS_NVML:
+        if self.gpu_type == "nvidia":
             try:
+                import pynvml
                 pynvml.nvmlInit()
                 logger.info("NVIDIA NVML initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize NVML: {e}")
                 self.gpu_type = "none"
+        elif self.gpu_type == "amd":
+            logger.info("AMD ROCm will use rocm-smi command")
     
     def get_gpu_info(self) -> GPUInfo:
         """Getting information about the GPU"""
-        if self.gpu_type == "nvidia" and HAS_NVML:
+        if self.gpu_type == "nvidia":
             return self._get_nvidia_info()
-        elif self.gpu_type == "amd" and HAS_ROCM:
+        elif self.gpu_type == "amd":
             return self._get_rocm_info()
         else:
-            # Simulation for debugging
             return self._get_mock_gpu_info()
     
     def _get_nvidia_info(self) -> GPUInfo:
-        """Getting information from NVIDIA NVML"""
+        """Getting information from NVIDIA via pynvml (main method)"""
         try:
+            import pynvml
             pynvml.nvmlInit()
             handle = pynvml.nvmlDeviceGetHandleByIndex(0)
             
             info = GPUInfo()
-            info.name = pynvml.nvmlDeviceGetName(handle).decode()
-            info.uuid = pynvml.nvmlDeviceGetUUID(handle).decode()
-            info.driver_version = pynvml.nvmlSystemGetDriverVersion().decode()
-            info.temperature = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
-            info.power_draw = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
             
-            utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
-            info.utilization = utilization.gpu
-            
-            memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            info.memory_total = memory.total / (1024 * 1024)  # MiB
-            info.memory_used = memory.used / (1024 * 1024)
-            info.memory_free = memory.free / (1024 * 1024)
-            
+            # Имя GPU
             try:
-                fan_speed = pynvml.nvmlDeviceGetFanSpeed(handle)
-                info.fan_speed = fan_speed
+                name = pynvml.nvmlDeviceGetName(handle)
+                info.name = name.decode() if isinstance(name, bytes) else name
+            except:
+                info.name = "Unknown NVIDIA GPU"
+            
+            # UUID
+            try:
+                uuid = pynvml.nvmlDeviceGetUUID(handle)
+                info.uuid = uuid.decode() if isinstance(uuid, bytes) else uuid
+            except:
+                pass
+            
+            # Driver version
+            try:
+                driver = pynvml.nvmlSystemGetDriverVersion()
+                info.driver_version = driver.decode() if isinstance(driver, bytes) else driver
+            except:
+                pass
+            
+            # CUDA Version
+            try:
+                cuda = pynvml.nvmlSystemGetCudaDriverVersion()
+                info.cuda_version = str(cuda)
+            except:
+                pass
+            
+            # Temperature
+            try:
+                info.temperature = float(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU))
+            except:
+                info.temperature = 0.0
+            
+            # Power consumption
+            try:
+                info.power_draw = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
+            except:
+                info.power_draw = 0.0
+            
+            # Max power
+            try:
+                info.power_max = pynvml.nvmlDeviceGetEnforcedPowerLimit(handle) / 1000.0
+            except:
+                info.power_max = 0.0
+            
+            
+            # GPU Utilization
+            try:
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                info.utilization = float(util.gpu)
+            except:
+                info.utilization = 0.0
+            
+            # Memory
+            try:
+                memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                info.memory_total = memory.total / (1024 * 1024)  # MiB
+                info.memory_used = memory.used / (1024 * 1024)
+                info.memory_free = memory.free / (1024 * 1024)
+            except:
+                info.memory_total = 0.0
+                info.memory_used = 0.0
+                info.memory_free = 0.0
+            
+            # Speed fan
+            try:
+                info.fan_speed = float(pynvml.nvmlDeviceGetFanSpeed(handle))
             except:
                 info.fan_speed = 0.0
             
+            pynvml.nvmlShutdown()
+            
+            logger.debug(f"NVIDIA GPU: {info.name}, Power: {info.power_draw:.1f}W, Temp: {info.temperature:.0f}°C")
             return info
             
         except Exception as e:
             logger.error(f"NVML error: {e}")
-            return GPUInfo()
+            
+            return self._get_nvidia_info_fallback()
+    
+    def _get_nvidia_info_fallback(self) -> GPUInfo:
+        """Fallback: getting NVIDIA info via nvidia-smi"""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=name,power.draw,utilization.gpu,memory.free,memory.total,temperature.gpu,fan.speed',
+                 '--format=csv,noheader,nounits'],
+                capture_output=True, text=True, timeout=2.0
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                parts = [x.strip() for x in result.stdout.strip().split(',')]
+                if len(parts) >= 8:
+                    info = GPUInfo()
+                    info.name = parts[0]
+                    info.power_draw = float(parts[1]) if parts[1] else 0.0
+                    info.utilization = float(parts[2]) if parts[2] else 0.0
+                    info.memory_free = float(parts[3]) if parts[3] else 0.0
+                    info.memory_total = float(parts[4]) if parts[4] else 0.0
+                    info.memory_used = info.memory_total - info.memory_free
+                    info.temperature = float(parts[5]) if parts[5] else 0.0
+                    info.fan_speed = float(parts[6]) if parts[6] else 0.0
+                    info.power_max = float(parts[7]) if parts[7] else 0.0
+                    logger.debug(f"NVIDIA fallback: {info.name}")
+                    return info
+        except Exception as e:
+            logger.warning(f"nvidia-smi fallback error: {e}")
+        
+        return GPUInfo()
     
     def _get_rocm_info(self) -> GPUInfo:
-        """Getting information from ROCm"""
-        # ROCm implementation placeholder
-        info = GPUInfo()
-        info.name = "AMD GPU (ROCm)"
-        info.utilization = 0.0
-        info.memory_total = 8192.0
-        info.memory_free = 8192.0
-        info.memory_used = 0.0
-        info.temperature = 40.0
-        return info
+        """Getting information from AMD via rocm-smi (JSON output)"""
+        try:
+            import subprocess
+            import json
+            
+            info = GPUInfo()
+            
+            # ============================================================
+            # 1. Getting basic information about the GPU
+            # ============================================================
+            result = subprocess.run(
+                ['rocm-smi', '--showallinfo', '--json'],
+                capture_output=True, text=True, timeout=3.0
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                data = json.loads(result.stdout)
+                
+                # find device
+                for card_key, card_data in data.items():
+                    if card_key.startswith('card'):
+                        # Name
+                        info.name = card_data.get('Device Name', 'AMD GPU')
+                        
+                        # temperature
+                        temp = card_data.get('Temperature (Sensor edge) (C)', '')
+                        info.temperature = float(temp) if temp else 0.0
+                        
+                        # Power consumption
+                        power = card_data.get('Current Socket Graphics Package Power (W)', '')
+                        info.power_draw = float(power) if power else 0.0
+                        
+                        # Max power
+                        power_max = card_data.get('Max Graphics Package Power (W)', '')
+                        info.power_max = float(power_max) if power_max else 0.0
+                        
+                        # GPU use
+                        gpu_use = card_data.get('GPU use (%)', '')
+                        info.utilization = float(gpu_use) if gpu_use else 0.0
+                        
+                        # Fan speed
+                        fan = card_data.get('Fan speed (%)', '')
+                        info.fan_speed = float(fan) if fan else 0.0
+                        
+                        break  
+            
+            # ============================================================
+            # 2. Getting accurate information about VRAM via --showmeminfo
+            # ============================================================
+            try:
+                mem_result = subprocess.run(
+                    ['rocm-smi', '--showmeminfo', 'vram', '--json'],
+                    capture_output=True, text=True, timeout=3.0
+                )
+                
+                if mem_result.returncode == 0 and mem_result.stdout.strip():
+                    mem_data = json.loads(mem_result.stdout)
+                    
+                    
+                    for card_key, card_data in mem_data.items():
+                        if card_key.startswith('card'):
+                            # VRAM Total 
+                            total_bytes = card_data.get('VRAM Total Memory (B)', '0')
+                            if isinstance(total_bytes, str):
+                                total_bytes = total_bytes.replace('"', '')
+                            info.memory_total = float(total_bytes) / (1024 * 1024)  
+                            
+                            # VRAM Used 
+                            used_bytes = card_data.get('VRAM Total Used Memory (B)', '0')
+                            if isinstance(used_bytes, str):
+                                used_bytes = used_bytes.replace('"', '')
+                            info.memory_used = float(used_bytes) / (1024 * 1024)  
+                            
+                            # VRAM Free = Total - Used
+                            info.memory_free = info.memory_total - info.memory_used
+                            
+                            logger.debug(f"AMD VRAM: Total={info.memory_total:.0f}MiB, Used={info.memory_used:.0f}MiB, Free={info.memory_free:.0f}MiB")
+                            break
+                            
+            except Exception as e:
+                logger.warning(f"Failed to get AMD VRAM info: {e}")
+            
+            logger.debug(f"AMD GPU: {info.name}, Power: {info.power_draw:.1f}W, Temp: {info.temperature:.0f}°C, VRAM: {info.memory_free:.0f}MiB free")
+            return info
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse rocm-smi JSON: {e}")
+        except Exception as e:
+            logger.warning(f"rocm-smi error: {e}")
+        
+        return GPUInfo()
     
     def _get_mock_gpu_info(self) -> GPUInfo:
         """GPU simulation for debugging"""
@@ -221,6 +401,7 @@ class HardwareMonitor:
         info.memory_used = info.memory_total - info.memory_free
         info.temperature = random.uniform(35, 65)
         info.fan_speed = random.uniform(20, 50)
+        info.power_draw = random.uniform(50, 150)
         return info
     
     def get_cpu_info(self) -> Tuple[float, int, float, float, float]:
@@ -234,6 +415,8 @@ class HardwareMonitor:
         ram_free = memory.free / (1024 * 1024)
         
         return cpu_load, cpu_threads, ram_total, ram_used, ram_free
+
+
 
 class LLMInterface:
     """
@@ -642,6 +825,7 @@ class PBDRServer:
                 'cuda_version': self.status.gpu.cuda_version,
                 'temperature': self.status.gpu.temperature,
                 'power': self.status.gpu.power_draw,
+                'power_max': self.status.gpu.power_max,
                 'gpu_utilization': self.status.gpu.utilization,
                 'memory_total': self.status.gpu.memory_total,
                 'memory_used': self.status.gpu.memory_used,
@@ -827,7 +1011,7 @@ class PBDRServer:
             
             
     async def _handle_restart(self, request):
-        """Перезапуск сервера с сохранением всех параметров"""
+        """Restarting the server with all the parameters saved"""
         try:
             # We check that the configuration exists
             if not os.path.exists(self.config_path):
@@ -848,7 +1032,7 @@ class PBDRServer:
             return web.json_response({'error': str(e)}, status=500)
 
     async def _perform_restart(self):
-        """Выполнение перезапуска с сохранением всех параметров"""
+        """Performing a restart with all parameters saved"""
         logger.info(f"🔄 Restarting PBDR Server with config: {self.config_path}")
         
         # We give you time to send a response to the client.
