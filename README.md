@@ -13,8 +13,10 @@
 > ⚡ **Turn idle corporate GPUs into a private, fault-tolerant AI cluster**  
 > 📦 **Zero-dependency setup in <30 seconds**  
 > 🎯 **Policy-based routing with 10+ cost dimensions**
+> ☁️ **Intelligent hybrid cloud routing by 40 cloud providers**
+> 💰 **Compares  electricity, cloud token costs, latency, and privacy**
 
-**OQOAI:PBDR** is an open-source, decentralized, and cross-platform system designed for AI traffic routing within enterprise computing infrastructure. It leverages existing hardware — workstations, servers, and GPU nodes — to create a unified AI cluster without requiring additional investment in specialized infrastructure. By implementing a state-of-the-art Policy-Based Decentralized Routing (PBDR) architecture, OQOAI ensures intelligent, policy-driven distribution of inference requests across heterogeneous environments, supporting both Linux and Windows platforms.
+**OQOAI:PBDR** is an open-source, decentralized, and cross-platform system designed for AI traffic routing within enterprise computing infrastructure. It leverages existing hardware — workstations, servers, and GPU nodes — to create a unified AI cluster without requiring additional investment in specialized infrastructure. By implementing a state-of-the-art Policy-Based Decentralized Routing (PBDR) architecture, OQOAI ensures intelligent, policy-driven distribution of inference requests across heterogeneous environments, supporting both Linux and Windows platforms. Automatically distributes AI workloads between local GPUs and 40+ cloud providers (OpenAI, Anthropic, Google, Azure, AWS, etc.) based on cost, performance, and privacy policies
 
 
 # PBDR Architecture
@@ -53,7 +55,9 @@ The PBDR architecture is characterized by the following features:
 
 ● **Stateless Nodes**: From a routing perspective, compute nodes are stateless, simplifying management, replacement, and scaling.
 
-> **Further Reading:** Scientific publication dedicated to the implemented architecture "PBDR Policy-Based Decentralized Routing for Enterprise AI Inference" http://doi.org/10.17513/doi.26.
+> **Further Reading:** Scientific publication dedicated to the implemented architecture:
+> - **PBDR v1.0:** "PBDR Policy-Based Decentralized Routing for Enterprise AI Inference" — http://doi.org/10.17513/doi.26
+> - **PBDR v2.0 (NEW):** "PBDR v2.0: Policy-Based Decentralized Routing for Enterprise AI Inference with Hybrid Cloud Architecture" — http://doi.org/10.17513/doi.27
 
 ![PBDR Concept](docs/image/Concept.png)
 
@@ -65,6 +69,14 @@ The PBDR architecture is characterized by the following features:
 - **10-dimensional cost vector** considers latency, throughput, GPU/CPU utilization, VRAM availability, temperature, and other metrics
 - **Adaptive Exploration** — balances between exploiting the best node and exploring alternatives
 - **Hard Constraints** — automatic filtering of nodes by model availability, VRAM, context length, and queue state
+
+### ☁️ Hybrid Cloud Routing (NEW)
+- **40+ cloud providers** support — OpenAI, Anthropic, Google, Azure, AWS Bedrock, DeepSeek, Together AI, Fireworks AI, Groq, and more
+- **Intelligent Cloud/Local decision engine** with 8 criteria (cost, latency, privacy, load, VRAM, time of day, model availability, model size)
+- **Economic cost optimization** — real-time comparison of local electricity costs vs. cloud token costs
+- **Full OpenAI API compatibility** — works with LangChain, LlamaIndex, and any OpenAI-compatible client
+- **Streaming support** — SSE proxying for cloud providers
+- **Unified interface** — same API for local and cloud models
 
 ### 🎛️ Flexible Policy Management
 - **Swappable policies** in real-time via API or web interface
@@ -81,6 +93,8 @@ The PBDR architecture is characterized by the following features:
 - **Ollama API** — full compatibility
 - **OpenAI API** (llama.cpp, vLLM, TGI)
 - **Automatic API type detection**
+- **40+ Cloud Providers** (NEW) — OpenAI, Anthropic, Google, Azure, AWS Bedrock, DeepSeek, Together AI, Fireworks AI, Groq, Replicate, HuggingFace, and more
+- **Multimodal APIs** (planned) — ComfyUI, Stable Diffusion, OpenAI Images API
 
 ### 🛡️ Fault Tolerance
 - **Versioned protocol** (ETag/If-Version) for minimal traffic
@@ -91,19 +105,22 @@ The PBDR architecture is characterized by the following features:
 
 ## 📊 Comparison
 
-| Feature | PBDR | Kubernetes | NGINX LB | Custom Solution |
-|---------|------|------------|----------|-----------------|
-| GPU-aware routing | ✅ | ❌ | ❌ | ⚠️ |
-| Policy-based routing | ✅ | ❌ | ⚠️ | ⚠️ |
-| Zero configuration | ✅ | ❌ | ❌ | ❌ |
-| Decentralized architecture | ✅ | ❌ | ❌ | ⚠️ |
-| <30s deployment | ✅ | ❌ | ❌ | ❌ |
-| Real-time GPU metrics | ✅ | ⚠️ | ❌ | ⚠️ |
-| Automatic node discovery | ✅ | ⚠️ | ❌ | ❌ |
-| Multi-model support | ✅ | ❌ | ❌ | ⚠️ |
-| Enterprise-grade security | ✅ | ✅ | ✅ | ⚠️ |
+| Feature | PBDR v2.0 | PBDR v1.0 | Kubernetes | NGINX LB |
+|---------|-----------|-----------|------------|----------|
+| GPU-aware routing | ✅ | ✅ | ❌ | ❌ |
+| Policy-based routing | ✅ | ✅ | ❌ | ⚠️ |
+| Zero configuration | ✅ | ✅ | ❌ | ❌ |
+| Decentralized architecture | ✅ | ✅ | ❌ | ❌ |
+| <30s deployment | ✅ | ✅ | ❌ | ❌ |
+| Real-time GPU metrics | ✅ | ✅ | ⚠️ | ❌ |
+| Automatic node discovery | ✅ | ✅ | ⚠️ | ❌ |
+| Multi-model support | ✅ | ✅ | ❌ | ⚠️ |
+| **Hybrid cloud routing** | ✅ | ❌ | ⚠️ | ❌ |
+| **40+ cloud providers** | ✅ | ❌ | ❌ | ❌ |
+| **Economic cost optimization** | ✅ | ❌ | ❌ | ❌ |
+| **Cloud streaming** | ✅ | ❌ | ❌ | ❌ |
+| Enterprise-grade security | ✅ | ✅ | ✅ | ✅ |
 | Open source (MIT) | ✅ | ✅ | ✅ | ❌ |
-
 ---
 
 ## 💡 Use Cases
@@ -163,7 +180,7 @@ Ability to connect remote nodes outside the corporate network, as well as cloud 
 Open MIT license for the core, allowing published PBDR builds to be incorporated into your projects without restrictions.
 
 **Scientific Contribution**
-The project authors are the creators of the PBDR architecture described at http://doi.org/10.17513/doi.26, providing a practical scientific contribution to the advancement of AI infrastructure technologies.
+The project authors are the creators of the PBDR architecture described at http://doi.org/10.17513/doi.26, http://doi.org/10.17513/doi.27, providing a practical scientific contribution to the advancement of AI infrastructure technologies.
 
 ---
 
@@ -303,6 +320,27 @@ The system supports swappable policies through a 10-dimensional cost vector:
 | `c10` | Network latency penalty | 0.1 |
 | `c11-` | Extended options | 0.1 | 
 | `-c20` | cost vector parameters | 0.1 |
+
+### Cloud Routing Policies (NEW)
+
+PBDR v2.0 introduces intelligent hybrid routing between local GPU nodes and cloud providers. The decision engine evaluates **8 criteria**:
+
+| Criterion | Weight | Description |
+|-----------|--------|-------------|
+| Model Availability | 1.0 | If model not available locally → cloud |
+| Privacy Sensitivity | 1.0 | PII/medical data → local only |
+| Queue Overload | 0.8 | Long queue → cloud |
+| GPU Utilization | 0.7 | High GPU load → cloud |
+| VRAM Pressure | 0.6 | Low VRAM → cloud |
+| Economic Cost | 0.5 | Compare electricity vs cloud token costs |
+| Time of Day | 0.3 | Nighttime → cloud (cheaper rates) |
+| Model Size | 0.4 | Models >24GB → cloud |
+
+**Decision threshold**: Configurable (default: 0.6)
+
+**Fallback strategy**: Automatic retry with fallback between cloud and local
+
+[Learn more about cloud routing configuration](docs/cloud-routing.md)
 
 ### Preset Policies
 
@@ -444,7 +482,178 @@ The system supports swappable policies through a 10-dimensional cost vector:
   }
 }
 ```
+### Cloud Configuration Example (`pbdr_client_config.json` with cloud support)
 
+```json
+{
+  "servers": [
+    {
+      "host": "192.168.1.107",
+      "api_port": 11434,
+      "monitor_port": 8080
+    }
+  ],
+  "api": {
+    "host": "0.0.0.0",
+    "port": 8080
+  },
+  "api_port": 11434,
+  "api_format": "openai",
+  "proxy_mode": false,
+  "buffer_size": 10,
+  "buffer_timeout": 0.5,
+  "discovery_interval": 1.0,
+  "exploration_beta": 0.5,
+  "exploration_alpha": 2.0,
+  "jitter_range": 0.05,
+  "current_policy": "min_latency",
+  "policies": {
+    "min_latency": {
+      "description": "Prioritizes fast response times over all other factors",
+      "weights": [1.5, 1.2, 0.8, 1.5, 1.0, 0.5, 1.0, 1.0, 0.2, 0.5]
+    },
+    "model_affinity": {
+      "description": "Prioritizes nodes where the requested model is already loaded",
+      "weights": [0.5, 0.7, 2.0, 0.5, 0.3, 0.2, 0.5, 0.5, 1.2, 0.2]
+    },
+    "energy_saving": {
+      "description": "Routes to the coolest nodes to reduce power consumption",
+      "weights": [0.2, 0.3, 0.5, 0.2, 0.5, 0.2, 0.3, 5.0, 0.1, 0.3]
+    },
+    "balanced": {
+      "description": "Balanced approach for general workloads",
+      "weights": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    },
+    "default": {
+      "description": "Default policy with equal weights",
+      "weights": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    }
+  },
+  "cloud_providers": {
+    "openai": {
+      "enabled": false,
+      "api_key": "sk-w...",
+      "base_url": "https://api.openai.com/v1",
+      "timeout": 120,
+      "max_retries": 2,
+      "models": {
+        "gpt-4o": {
+          "cost_per_1k_input": 0.005,
+          "cost_per_1k_output": 0.015,
+          "context_window": 128000,
+          "latency_estimate_ms": 500,
+          "reliability_score": 0.99
+        },
+        "gpt-4o-mini": {
+          "cost_per_1k_input": 0.00015,
+          "cost_per_1k_output": 0.0006,
+          "context_window": 128000,
+          "latency_estimate_ms": 300,
+          "reliability_score": 0.995
+        }
+      }
+    },
+    "anthropic": {
+      "enabled": false,
+      "api_key": "sk-ant-...",
+      "base_url": "https://api.anthropic.com/v1",
+      "models": {
+        "claude-3-5-sonnet-20241022": {
+          "cost_per_1k_input": 0.003,
+          "cost_per_1k_output": 0.015,
+          "context_window": 200000,
+          "latency_estimate_ms": 600,
+          "reliability_score": 0.99
+        }
+      }
+    },
+    "deepseek": {
+      "enabled": false,
+      "api_key": "sk-...",
+      "base_url": "https://api.deepseek.com/v1",
+      "models": {
+        "deepseek-chat": {
+          "cost_per_1k_input": 0.00014,
+          "cost_per_1k_output": 0.00028,
+          "context_window": 65536,
+          "latency_estimate_ms": 400,
+          "reliability_score": 0.98
+        }
+      }
+    }
+  },
+  
+  "cloud_routing_policy": {
+    "decision_threshold": 0.6,
+    "min_cloud_confidence": 0.5,
+    "max_cloud_cost_per_hour": 5.0,
+    "max_cloud_requests_per_minute": 100,
+    
+    "cost_sensitivity": 0.4,
+    "latency_sensitivity": 0.6,
+    "reliability_sensitivity": 0.5,
+    "privacy_sensitivity": 0.8,
+    
+    "criteria_weights": {
+      "model_availability": 1.0,
+      "queue_overload": 0.8,
+      "gpu_high_util": 0.7,
+      "vram_shortage": 0.6,
+      "cost_effectiveness": 0.5,
+      "night_hours": 0.3,
+      "large_model": 0.4,
+      "local_failures": 0.9,
+      "privacy_required": 1.0
+    },
+    
+    "thresholds": {
+      "queue_length_high": 5,
+      "queue_length_critical": 10,
+      "gpu_utilization_high": 70,
+      "gpu_utilization_critical": 90,
+      "vram_available_min_mb": 2000,
+      "vram_shortage_ratio": 1.3,
+      "model_size_large_gb": 24,
+      "night_hours_start": 22,
+      "night_hours_end": 6,
+      "cost_advantage_threshold": 0.7,
+      "local_success_rate_min": 0.95
+    },
+    
+    "conditions": {
+      "always_cloud": {
+        "models_not_available_locally": true,
+        "queue_length_threshold": 10,
+        "gpu_utilization_threshold": 90,
+        "vram_available_threshold_mb": 2000
+      },
+      "never_cloud": {
+        "data_classification": ["private", "pii", "healthcare", "financial"],
+        "model_names": ["custom-*"],
+        "cost_ceiling_per_request": 0.01
+      },
+      "prefer_cloud": {
+        "time_of_day": ["22:00-06:00"],
+        "model_size_gb_threshold": 24,
+        "avg_cloud_cost_less_than_local_percent": 80
+      }
+    },
+    
+    "fallback_strategy": {
+      "cloud_fallback_to_local": true,
+      "local_fallback_to_cloud": true,
+      "retry_count": 2,
+      "retry_delay_seconds": 0.5
+    }
+  },
+  
+  "routing_cache": {
+    "enabled": true,
+    "ttl_seconds": 60,
+    "max_entries": 1000
+  }
+  
+```
 ---
 
 ## Monitoring and Metrics
@@ -563,6 +772,11 @@ Please note that this project is released with a [Contributor Code of Conduct](C
 - [x] Configuration modification and write-back to servers, clients, groups, or all nodes from admin dashboard
 - [x] Network scanning to discover running server and client nodes within subnet range
 - [x] Policy management for individual devices, groups, or all nodes
+- [x] **40+ cloud providers integration** (OpenAI, Anthropic, Google, Azure, AWS, DeepSeek, Together AI, etc.)
+- [x] **Hybrid cloud routing with decision engine**
+- [x] **Economic cost optimization** (real-time power monitoring vs. cloud costs)
+- [x] **Cloud streaming support** (SSE proxying)
+- [x] **Full OpenAI API compatibility**
 
 #### 📋 Planned for Implementation
 - [ ] Alert and notification system
@@ -572,15 +786,15 @@ Please note that this project is released with a [Contributor Code of Conduct](C
 - [ ] WebSocket support for real-time streaming
 - [ ] Grafana dashboards integration
 - [ ] Prometheus metrics export
-- [ ] Dynamic node support
+- [ ] Dynamic node support (ephemeral IPs)
 - [ ] ComfyUI API support
 - [ ] OpenAI Images API support
 - [ ] Automatic1111 REST API support
 - [ ] Request forwarding
-- [ ] AI-powered request routing
+- [ ] **AI-powered routing** — ML-based policy selection and workload prediction
+- [ ] **Federated Policy Learning** — privacy-preserving policy optimization per department
 - [ ] Third-party server load monitoring and forecasting
 - [ ] Device logs and history for each device
-
 
 ## 📄 License
 
@@ -595,7 +809,8 @@ This MIT license governs only the copyright to the source code and does not itse
 - [Documentation](https://github.com/oqo-ai/OQOAI-PBDR/wiki)
 - [Examples](https://github.com/oqo-ai/OQOAI-PBDR/tree/main/examples)
 - [Community](https://github.com/oqo-ai/OQOAI-PBDR/discussions)
-- [Scientific Publication](http://doi.org/10.17513/doi.26)
+- [Scientific Publication PBDR v1.0](http://doi.org/10.17513/doi.26)
+- [Scientific Publication PBDR v2.0](http://doi.org/10.17513/doi.27)
 - [Issue Tracker](https://github.com/oqo-ai/OQOAI-PBDR/issues)
 
 ---
@@ -613,8 +828,7 @@ If PBDR has helped you in your work or research, please star the repository on G
 - Affiliation: Founder of [iximy LLC], Open Source Association of innovation
 
 The PBDR project is a scientific and open-source effort. The core concepts are published in a peer-reviewed preprint:
-[DOI: 10.17513/doi.26](http://doi.org/10.17513/doi.26)
-
+[DOI: 10.17513/doi.26](http://doi.org/10.17513/doi.26) [DOI: 10.17513/doi.27](http://doi.org/10.17513/doi.27)
 
 ### Contributors
 
