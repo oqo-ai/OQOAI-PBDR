@@ -766,6 +766,7 @@ Please note that this project is released with a [Contributor Code of Conduct](C
 #### ✅ Already Implemented
 - [x] Decentralized data exchange architecture
 - [x] Binary experimental (alpha) builds for Linux and Windows
+- [x] Support Nvidia and AMD GPU
 - [x] Basic intelligent request routing algorithms
 - [x] Current server and client status with available metrics in admin dashboard
 - [x] Server and client node configuration reading from admin dashboard
